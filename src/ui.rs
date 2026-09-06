@@ -7,11 +7,16 @@ use std::rc::Rc;
 
 use crate::emoji;
 
-/// Fixed geometry. The list is virtualized, so the scroll math below has to be able to
-/// work out where a section starts without having measured the widgets.
+/// Requested geometry: what the widgets ask GTK for, not what they end up being. The CSS
+/// below adds section padding and a box around each button, so a laid-out header and row
+/// are both taller than this. The scroll math wants the real numbers and takes them from
+/// the first frame (see `Picker::measure`); these are only the starting guess, used until
+/// that frame lands and for sizing the card.
 const COLUMNS: usize = 12;
 const CELL: i32 = 44;
 const HEADER_H: i32 = 30;
+/// The header and row heights a view is built with until a frame has been measured.
+const GUESS: (f64, f64) = (HEADER_H as f64, CELL as f64);
 
 /// How many emoji rows to put in the list before handing control back to GTK. The card
 /// shows about eight; the rest are appended from an idle callback, which keeps the
@@ -71,9 +76,27 @@ struct View {
     /// `i` starts; the scroll handler reads this on every frame, so it is precomputed
     /// rather than summed on demand.
     offsets: Vec<f64>,
+    /// Height of one header and one emoji row, as GTK laid them out. Held here rather
+    /// than read from the picker on every push, and so `rescale` can restate the offsets
+    /// of a view that was built before the first measurement.
+    header_h: f64,
+    row_h: f64,
 }
 
 impl View {
+    fn new((header_h, row_h): (f64, f64)) -> Self {
+        View {
+            items: Vec::new(),
+            rows: Vec::new(),
+            row_of: Vec::new(),
+            sections: Vec::new(),
+            // The offset of item 0; every push appends the offset of the item after it.
+            offsets: vec![0.0],
+            header_h,
+            row_h,
+        }
+    }
+
     fn row_cells(&self, r: usize) -> &[&'static str] {
         match self.items.get(self.rows.get(r).copied().unwrap_or(usize::MAX)) {
             Some(Item::Row(cells)) => cells,
@@ -95,17 +118,34 @@ impl View {
         let h = match &item {
             Item::Header => {
                 self.row_of.push(None);
-                HEADER_H
+                self.header_h
             }
             Item::Row(_) => {
                 self.row_of.push(Some(self.rows.len()));
                 self.rows.push(at);
-                CELL
+                self.row_h
             }
         };
         self.items.push(item);
-        self.offsets.push(self.offsets[at] + h as f64);
+        self.offsets.push(self.offsets[at] + h);
         at
+    }
+
+    /// Restate every offset from heights that have since been measured. The items are
+    /// untouched; only where each one sits moves.
+    fn rescale(&mut self, (header_h, row_h): (f64, f64)) {
+        self.header_h = header_h;
+        self.row_h = row_h;
+        self.offsets.clear();
+        self.offsets.push(0.0);
+        let mut y = 0.0;
+        for item in &self.items {
+            y += match item {
+                Item::Header => header_h,
+                Item::Row(_) => row_h,
+            };
+            self.offsets.push(y);
+        }
     }
 }
 
@@ -150,8 +190,9 @@ fn fill(view: &mut View, encoded: &mut Vec<String>, queue: &mut Vec<Chunk>, max_
             return;
         }
         let (title, cells) = queue.remove(0);
-        // At least one row of room, since the loop guard just passed.
-        let room = (max_rows - view.rows.len()) * COLUMNS;
+        // At least one row of room, since the loop guard just passed. Saturating because
+        // the tail fill passes `usize::MAX` for "no cap", which overflows a debug build.
+        let room = (max_rows - view.rows.len()).saturating_mul(COLUMNS);
         if cells.len() > room {
             let at = push_section(view, encoded, title.as_deref(), &cells[..room]);
             if title.is_some() {
@@ -163,19 +204,6 @@ fn fill(view: &mut View, encoded: &mut Vec<String>, queue: &mut Vec<Chunk>, max_
         let at = push_section(view, encoded, title.as_deref(), &cells);
         if title.is_some() {
             view.sections.push(at);
-        }
-    }
-}
-
-impl Default for View {
-    fn default() -> Self {
-        View {
-            items: Vec::new(),
-            rows: Vec::new(),
-            row_of: Vec::new(),
-            sections: Vec::new(),
-            // The offset of item 0; every push appends the offset of the item after it.
-            offsets: vec![0.0],
         }
     }
 }
@@ -199,6 +227,9 @@ pub struct Picker {
     /// Bumped on every rebuild, so a queued tail fill can tell it has been outrun by a
     /// newer one — a keystroke landing before the idle callback runs.
     fill: Cell<u32>,
+    /// Header and row height as GTK laid them out, once it has. `None` until the first
+    /// frame is measured, which is what `GUESS` covers for.
+    metrics: Cell<Option<(f64, f64)>>,
 }
 
 impl Picker {
@@ -314,13 +345,14 @@ impl Picker {
             model: model.clone(),
             list: list.clone(),
             footer: footer.clone(),
-            view: RefCell::new(View::default()),
+            view: RefCell::new(View::new(GUESS)),
             sel: Cell::new((0, 0)),
             recents: RefCell::new(recents),
             tone: Cell::new(0),
             tabs: RefCell::new(Vec::new()),
             scrolling: Cell::new(false),
             fill: Cell::new(0),
+            metrics: Cell::new(None),
         });
 
         let pick = Rc::new(on_pick);
@@ -549,6 +581,69 @@ impl Picker {
         }
         self.window.present();
         self.entry.grab_focus();
+        self.measure_once();
+    }
+
+    /// Take the header and row heights from the first frame GTK lays out, and restate the
+    /// offsets from them.
+    ///
+    /// The tick callback only runs while the list is mapped, and the first few ticks can
+    /// still come before the items have an allocation, so it retries until `measure`
+    /// answers. Once per process is enough: the heights follow the CSS and the theme, and
+    /// neither moves while the picker is up.
+    fn measure_once(self: &Rc<Self>) {
+        if self.metrics.get().is_some() {
+            return;
+        }
+        let p = self.clone();
+        // If the list somehow never lays out a header and a row together, give up rather
+        // than wake on every frame for as long as the window is open.
+        let tries = Cell::new(0u32);
+        self.list.add_tick_callback(move |_, _| {
+            tries.set(tries.get() + 1);
+            match p.measure() {
+                Some(metrics) => {
+                    p.metrics.set(Some(metrics));
+                    p.view.borrow_mut().rescale(metrics);
+                    glib::ControlFlow::Break
+                }
+                None if tries.get() < 30 => glib::ControlFlow::Continue,
+                None => glib::ControlFlow::Break,
+            }
+        });
+    }
+
+    /// The laid-out height of one header item and one emoji-row item. `None` until the
+    /// list has both kinds on screen with a real allocation.
+    ///
+    /// Each item widget wraps the box the factory built, whose two children are the header
+    /// label and the strip of buttons — exactly one of them visible per item. GTK does not
+    /// allocate a hidden widget, so a nonzero height on one of the two both identifies the
+    /// kind of item and rules out the spare item widgets the list keeps unbound.
+    fn measure(&self) -> Option<(f64, f64)> {
+        let (mut header, mut row) = (None, None);
+        let mut child = self.list.first_child();
+        while let Some(w) = child {
+            child = w.next_sibling();
+            let Some(stack) = w.first_child() else { continue };
+            let (Some(label), Some(cells)) = (stack.first_child(), stack.last_child()) else {
+                continue;
+            };
+            // The item's whole box. `height()` would give the content alone, without the
+            // padding around it — which is the gap the constants were missing.
+            let Some(h) = w.compute_bounds(&self.list).map(|b| b.height() as f64) else {
+                continue;
+            };
+            if label.height() > 0 {
+                header.get_or_insert(h);
+            } else if cells.height() > 0 {
+                row.get_or_insert(h);
+            }
+            if let (Some(header), Some(row)) = (header, row) {
+                return Some((header, row));
+            }
+        }
+        None
     }
 
     /// A one-line summary of the filled list, for `--time-launch`.
@@ -559,12 +654,17 @@ impl Picker {
             .iter()
             .map(|s| s.map_or("-".into(), |i| i.to_string()))
             .collect();
+        // `height` is what the offsets say the list is; `upper` is what GTK laid out. They
+        // should agree — the offsets are the whole basis for the tab jumps, and a gap
+        // between the two is how far off those jumps land.
         format!(
-            "model={} items={} rows={} height={} sections=[{}]",
+            "model={} items={} rows={} metrics={:?} height={} upper={} sections=[{}]",
             self.model.n_items(),
             view.items.len(),
             view.rows.len(),
+            self.metrics.get(),
             view.offset(view.items.len()),
+            self.adjustment().map_or(0.0, |a| a.upper()),
             sections.join(","),
         )
     }
@@ -619,7 +719,7 @@ impl Picker {
         }
 
         // Enough to cover the viewport now; the rest waits for an idle turn.
-        let mut view = View::default();
+        let mut view = View::new(self.metrics.get().unwrap_or(GUESS));
         let mut encoded: Vec<String> = Vec::new();
         fill(&mut view, &mut encoded, &mut queue, HEAD_ROWS);
 
@@ -733,10 +833,10 @@ impl Picker {
         let view = self.view.borrow();
         let Some(&item) = view.rows.get(r) else { return };
         let top = view.offset(item);
-        let bottom = top + CELL as f64;
+        let bottom = top + view.row_h;
         // A row at the top of a section should show its header too.
         let target = if top < adj.value() {
-            (top - HEADER_H as f64).max(0.0)
+            (top - view.header_h).max(0.0)
         } else if bottom > adj.value() + adj.page_size() {
             bottom - adj.page_size()
         } else {

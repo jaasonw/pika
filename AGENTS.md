@@ -112,9 +112,27 @@ separate "the mechanism is broken" from "the app's own sequencing is wrong".
   `offset()` is an index rather than a walk (`sync_active_tab` calls it on every scroll
   tick), and `row_of` inverts `rows` so the bind handler does not scan for each row that
   scrolls past.
-- **Section jumps compute pixel offsets** from `CELL` and `HEADER_H` instead of measuring
-  widgets, since virtualized rows may not exist yet. **Those constants must match the
-  CSS** — restyling row padding without updating them breaks tab navigation silently.
+- **Section jumps read `offsets`, which is built from measured heights.** Virtualized rows
+  may not exist when a jump is computed, so the offsets cannot be read off the widgets
+  each time — but they no longer have to match the CSS by hand either. `Picker::measure`
+  takes the height of one laid-out header and one laid-out emoji row from the first frame,
+  caches them in `Picker::metrics`, and `View::rescale` restates every offset from them;
+  `View::new` starts later rebuilds from the cached pair.
+  - `CELL` and `HEADER_H` are only what the widgets *request*, plus the guess the first
+    view is built with before that frame lands. They are not what GTK lays out: the
+    `.section` padding and the item widget's own box put a header at 42px and a row at
+    56px against requests of 30 and 44. Summing the constants gave 7,648px for the 177-row
+    browse list where GTK's `adjustment().upper()` was 9,772 — 28% short, so tab jumps
+    under-scrolled further the lower the section sat, and `sync_active_tab` lit the wrong
+    tab for the same reason.
+  - Measure with `--time-launch`: it prints `height=` (what `offsets` says) next to
+    `upper=` (what GTK laid out) once the list has settled. **Those two must agree.** They
+    are the check that replaces keeping the constants in sync with the CSS — restyling row
+    padding is now free, but a change that breaks the measurement shows up as a gap here.
+  - `measure` identifies an item by which of the factory box's two children has a nonzero
+    height, since GTK does not allocate the hidden one. It reads `compute_bounds`, not
+    `height()`: the latter is the content box without the padding, which is exactly the
+    number the constants already got wrong.
 - **Selection repaint goes through the model.** Splicing a row's own text back over
   itself makes `StringList` emit items-changed, so the factory rebinds and repaints.
   Tracking bound row widgets in a map looked simpler but went stale as the list recycled
