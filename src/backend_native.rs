@@ -1,9 +1,11 @@
 //! The native Wayland backend: smithay-client-toolkit + cairo + pangocairo, no GTK.
 //!
 //! The layer-shell surface, event loop, and the keyboard and pointer routing that drives
-//! `Picker`. Insertion and the settings mode are still to come; see
+//! `Picker`. A committed choice is inserted through the shared `commit` module, the same
+//! two routes the GTK build uses. The settings mode is still to come; see
 //! plans/wayland-native-migration.md.
 
+use crate::commit;
 use crate::picker::Picker;
 use crate::render;
 use crate::store::Store;
@@ -23,7 +25,9 @@ use smithay_client_toolkit::shell::wlr_layer::{
 use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use smithay_client_toolkit::{delegate_registry, registry_handlers};
+use std::cell::RefCell;
 use std::process::ExitCode;
+use std::rc::Rc;
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, QueueHandle};
@@ -92,8 +96,11 @@ pub fn run(flags: Flags) -> ExitCode {
         }
     };
 
-    let store = Store::load();
-    let ui = Picker::new(store.recents().to_vec(), store.settings().skin_tone);
+    let store = Rc::new(RefCell::new(Store::load()));
+    let ui = {
+        let st = store.borrow();
+        Picker::new(st.recents().to_vec(), st.settings().skin_tone)
+    };
 
     let mut app = App {
         registry: RegistryState::new(&globals),
@@ -112,6 +119,7 @@ pub fn run(flags: Flags) -> ExitCode {
         configured: false,
         reported_first_frame: !flags.time_launch,
         ctrl: false,
+        picked: None,
         exit: false,
     };
 
@@ -128,6 +136,42 @@ pub fn run(flags: Flags) -> ExitCode {
     if let Some(p) = app.pointer.take() {
         p.release();
     }
+
+    let Some(ch) = app.picked.take() else {
+        return ExitCode::SUCCESS;
+    };
+    if flags.print {
+        println!("{ch}");
+    }
+    store.borrow_mut().record_use(ch);
+
+    // Unmap before inserting. The keystrokes have to land in whatever had focus before us,
+    // and while this surface is up it holds the keyboard exclusively.
+    let surface = app.layer.wl_surface();
+    surface.attach(None, 0, 0);
+    surface.commit();
+    let _ = conn.roundtrip();
+    // The roundtrip only proves the compositor saw the unmap, not that it has moved focus
+    // on and told the new client. This is the same wait the GTK path takes after hiding.
+    std::thread::sleep(commit::HIDE_SETTLE);
+
+    let agent = Rc::new(RefCell::new(None));
+    let (want_insert, want_copy) = {
+        let st = store.borrow();
+        (st.settings().insert, st.settings().always_copy)
+    };
+    commit::finish(commit::Ctx {
+        ch,
+        st: &store,
+        agent: &agent,
+        // Nothing to quit: the event loop has already ended and this is the last work in
+        // the process. Daemon mode is not wired up on this backend yet.
+        quit: &|| {},
+        daemon: false,
+        // Flags win for a single run; otherwise the saved settings do.
+        no_paste: flags.no_paste || !want_insert,
+        always_copy: flags.always_copy || want_copy,
+    });
     ExitCode::SUCCESS
 }
 
@@ -150,6 +194,9 @@ struct App {
     reported_first_frame: bool,
     /// Ctrl held, tracked from modifier events so key handling can branch on it.
     ctrl: bool,
+    /// Set when the user commits a choice, and consumed after the loop ends so the
+    /// insert happens with the surface already unmapped.
+    picked: Option<&'static str>,
     exit: bool,
 }
 
@@ -343,11 +390,7 @@ impl KeyboardHandler for App {
                 return;
             }
             Keysym::Return | Keysym::KP_Enter => {
-                // Committing is Phase 6 work; for now the choice is reported so the
-                // grid can be exercised end to end.
-                if let Some(ch) = self.ui.selected() {
-                    println!("{ch}");
-                }
+                self.picked = self.ui.selected();
                 self.exit = true;
                 return;
             }
@@ -458,9 +501,7 @@ impl PointerHandler for App {
                     }
                     if let Some(cell) = self.ui.cell_at(px - vx, py - vy) {
                         self.ui.sel = cell;
-                        if let Some(ch) = self.ui.selected() {
-                            println!("{ch}");
-                        }
+                        self.picked = self.ui.selected();
                         self.exit = true;
                         return;
                     }
