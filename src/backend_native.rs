@@ -6,12 +6,16 @@
 //! plans/wayland-native-migration.md.
 
 use crate::commit;
+use crate::ipc;
 use crate::picker::Picker;
 use crate::render;
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::{Flags, since_start};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
@@ -123,9 +127,45 @@ pub fn run(flags: Flags) -> ExitCode {
         exit: false,
     };
 
+    // calloop rather than blocking_dispatch, so the single-instance socket can be watched
+    // in the same loop as the Wayland fd instead of from a second thread.
+    let mut event_loop: EventLoop<App> = match EventLoop::try_new() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("emoji-picker: event loop failed ({e})");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(e) = WaylandSource::new(conn.clone(), queue).insert(event_loop.handle()) {
+        eprintln!("emoji-picker: could not watch the wayland connection ({e})");
+        return ExitCode::FAILURE;
+    }
+
+    // Serving the socket is what makes a second hotkey press close the picker rather than
+    // start another one. A failure here is not fatal: the picker still works, it just
+    // stops being single-instance.
+    match ipc::bind().and_then(|l| l.set_nonblocking(true).map(|()| l)) {
+        Ok(listener) => {
+            let source = Generic::new(listener, Interest::READ, Mode::Level);
+            let registered = event_loop.handle().insert_source(source, |_, listener, app| {
+                // Level-triggered, so drain every pending connection before returning.
+                while let Ok((mut stream, _)) = listener.accept() {
+                    ipc::ack(&mut stream);
+                    // One-shot mode has nothing to toggle back to, so a toggle is a close.
+                    app.exit = true;
+                }
+                Ok(PostAction::Continue)
+            });
+            if let Err(e) = registered {
+                eprintln!("emoji-picker: could not watch the toggle socket ({e})");
+            }
+        }
+        Err(e) => eprintln!("emoji-picker: single-instance socket unavailable ({e})"),
+    }
+
     while !app.exit {
-        if let Err(e) = queue.blocking_dispatch(&mut app) {
-            eprintln!("emoji-picker: wayland dispatch failed ({e})");
+        if let Err(e) = event_loop.dispatch(None, &mut app) {
+            eprintln!("emoji-picker: dispatch failed ({e})");
             return ExitCode::FAILURE;
         }
     }
