@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Emoji Picker
+Comment=Pick an emoji and insert it into the focused field
+Exec=emoji-picker
+Icon=face-smile
+Terminal=false
+NoDisplay=true
+X-KDE-GlobalAccel-CommandShortcut=true
