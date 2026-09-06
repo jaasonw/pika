@@ -15,6 +15,8 @@ mod ui;
 #[cfg(feature = "native")]
 mod backend_native;
 #[cfg(feature = "native")]
+mod render;
+#[cfg(feature = "native")]
 mod theme;
 
 #[cfg(not(any(feature = "gtk", feature = "native")))]

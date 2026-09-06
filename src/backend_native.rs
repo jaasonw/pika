@@ -1,18 +1,36 @@
 //! The native Wayland backend: smithay-client-toolkit + cairo + pangocairo, no GTK.
 //!
-//! Phase 1 skeleton. It brings up the two subsystems the rest of the migration hangs off -
-//! the Wayland connection and a pangocairo text context - so that the dependency gating is
-//! proven and the library/memory floor can be measured, but it does not draw yet.
-//! Phases 2-6 fill this in; see plans/wayland-native-migration.md.
+//! Phase 3 of the migration - the layer-shell surface and event loop are up and the card is
+//! drawn. The grid, search field and settings mode are still to come; see
+//! plans/wayland-native-migration.md.
 
+use crate::render;
 use crate::theme::Theme;
 use crate::{Flags, since_start};
+use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
+use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
+use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
+use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::{
+    Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+    LayerSurfaceConfigure,
+};
+use smithay_client_toolkit::shm::slot::SlotPool;
+use smithay_client_toolkit::shm::{Shm, ShmHandler};
+use smithay_client_toolkit::{delegate_registry, registry_handlers};
 use std::process::ExitCode;
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::wl_registry::WlRegistry;
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::globals::registry_queue_init;
+use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
+use wayland_client::{Connection, QueueHandle};
 
-pub fn run(_flags: Flags) -> ExitCode {
+/// Fallback surface size, used only if the compositor configures us with 0x0 - which it
+/// should not, since we anchor to all four edges and it knows the output size.
+const FALLBACK: (u32, u32) = (1920, 1080);
+
+pub fn run(flags: Flags) -> ExitCode {
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(e) => {
@@ -20,51 +38,436 @@ pub fn run(_flags: Flags) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (globals, _queue) = match registry_queue_init::<NoopState>(&conn) {
+    let (globals, mut queue) = match registry_queue_init(&conn) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("emoji-picker: registry init failed ({e})");
             return ExitCode::FAILURE;
         }
     };
+    let qh = queue.handle();
 
-    // Touch the text stack too: font discovery is a real share of cold start, and it is
-    // what the first-frame budget in the plan has to account for.
-    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).unwrap();
-    let cr = cairo::Context::new(&surface).unwrap();
-    let layout = pangocairo::functions::create_layout(&cr);
-    layout.set_font_description(Some(&pango::FontDescription::from_string(
-        "Noto Color Emoji 24",
-    )));
-    layout.set_text("\u{1F600}");
-    let (w, h) = layout.pixel_size();
+    let compositor = match CompositorState::bind(&globals, &qh) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("emoji-picker: no wl_compositor ({e})");
+            return ExitCode::FAILURE;
+        }
+    };
+    let layer_shell = match LayerShell::bind(&globals, &qh) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("emoji-picker: compositor has no wlr-layer-shell ({e})");
+            return ExitCode::FAILURE;
+        }
+    };
+    let shm = match Shm::bind(&globals, &qh) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("emoji-picker: no wl_shm ({e})");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    let theme = Theme::load();
+    let surface = compositor.create_surface(&qh);
+    let layer =
+        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("emoji-picker"), None);
+    // Anchored to every edge, so the surface spans the output: a click landing outside the
+    // card still reaches us and dismisses, the way the GTK build behaves.
+    layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+    // Exclusive so a hotkey-driven picker gets the keystrokes without a click first.
+    layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+    layer.commit();
 
-    eprintln!(
-        "emoji-picker: native backend not implemented yet \
-         (wayland globals={}, emoji layout={w}x{h}, {} theme bg={:?}, {:?} elapsed)",
-        globals.contents().clone_list().len(),
-        if theme.is_dark() { "dark" } else { "light" },
-        theme.window_bg,
-        since_start(),
-    );
-    ExitCode::FAILURE
+    // One slot, not two: the picker redraws on input, never continuously, so there is no
+    // frame in flight to double-buffer against. At full-output size that is the difference
+    // between ~9 MB and ~18 MB of shm. SlotPool grows on demand if that assumption breaks.
+    let pool = match SlotPool::new(4, &shm) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("emoji-picker: shm pool failed ({e})");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut app = App {
+        registry: RegistryState::new(&globals),
+        output: OutputState::new(&globals, &qh),
+        seat: SeatState::new(&globals, &qh),
+        shm,
+        pool,
+        layer,
+        keyboard: None,
+        pointer: None,
+        width: FALLBACK.0,
+        height: FALLBACK.1,
+        scale: 1,
+        theme: Theme::load(),
+        configured: false,
+        reported_first_frame: !flags.time_launch,
+        exit: false,
+    };
+
+    while !app.exit {
+        if let Err(e) = queue.blocking_dispatch(&mut app) {
+            eprintln!("emoji-picker: wayland dispatch failed ({e})");
+            return ExitCode::FAILURE;
+        }
+    }
+
+    if let Some(k) = app.keyboard.take() {
+        k.release();
+    }
+    if let Some(p) = app.pointer.take() {
+        p.release();
+    }
+    ExitCode::SUCCESS
 }
 
-/// The registry needs a dispatch target even though this skeleton handles no events yet.
-/// Phase 3 replaces this with the real SCTK state, which delegates registry handling to
-/// `RegistryState`.
-struct NoopState;
+struct App {
+    registry: RegistryState,
+    output: OutputState,
+    seat: SeatState,
+    shm: Shm,
+    pool: SlotPool,
+    layer: LayerSurface,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
+    width: u32,
+    height: u32,
+    /// Integer output scale. Fractional scaling is Phase 3 follow-up work.
+    scale: i32,
+    theme: Theme,
+    configured: bool,
+    reported_first_frame: bool,
+    exit: bool,
+}
 
-impl Dispatch<WlRegistry, GlobalListContents> for NoopState {
-    fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: <WlRegistry as wayland_client::Proxy>::Event,
-        _: &GlobalListContents,
+impl App {
+    fn draw(&mut self) {
+        // Buffer dimensions are physical; the Cairo transform below turns the rest of the
+        // drawing code back into logical pixels.
+        let (w, h) = (
+            self.width as i32 * self.scale,
+            self.height as i32 * self.scale,
+        );
+        let stride = w * 4;
+
+        let Ok((buffer, canvas)) =
+            self.pool
+                .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
+        else {
+            eprintln!("emoji-picker: could not allocate a {w}x{h} buffer");
+            self.exit = true;
+            return;
+        };
+
+        {
+            // SAFETY: `canvas` is a mutable borrow of the pool's mapping, valid for at
+            // least this block, and the surface and context are both dropped before it
+            // ends. wl_shm's Argb8888 is premultiplied little-endian, which is exactly
+            // Cairo's ARgb32 on this target.
+            let surface = unsafe {
+                cairo::ImageSurface::create_for_data_unsafe(
+                    canvas.as_mut_ptr(),
+                    cairo::Format::ARgb32,
+                    w,
+                    h,
+                    stride,
+                )
+            };
+            let Ok(surface) = surface else {
+                eprintln!("emoji-picker: cairo surface creation failed");
+                self.exit = true;
+                return;
+            };
+            let cr = cairo::Context::new(&surface).expect("cairo context");
+            cr.scale(self.scale as f64, self.scale as f64);
+            render::frame(&cr, &self.theme, self.width as f64, self.height as f64);
+            drop(cr);
+            surface.finish();
+        }
+
+        let wl_surface = self.layer.wl_surface();
+        wl_surface.set_buffer_scale(self.scale);
+        // Only the card changed; damaging just that rect keeps the compositor from
+        // reblending the whole screen for every keystroke.
+        let (cx, cy) = render::card_origin(self.width as f64, self.height as f64);
+        wl_surface.damage_buffer(
+            cx as i32 * self.scale,
+            cy as i32 * self.scale,
+            render::CARD_W as i32 * self.scale,
+            render::CARD_H as i32 * self.scale,
+        );
+        if buffer.attach_to(wl_surface).is_err() {
+            eprintln!("emoji-picker: buffer attach failed");
+            self.exit = true;
+            return;
+        }
+        self.layer.commit();
+
+        if !self.reported_first_frame {
+            self.reported_first_frame = true;
+            println!("first frame at {:?}", since_start());
+            // Nothing else to wait for yet: with no grid to fill there is no settled state
+            // to report, so a --time-launch run ends here.
+            self.exit = true;
+        }
+    }
+}
+
+impl LayerShellHandler for App {
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
+        self.exit = true;
+    }
+
+    fn configure(
+        &mut self,
         _: &Connection,
         _: &QueueHandle<Self>,
+        _: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _: u32,
+    ) {
+        let (w, h) = configure.new_size;
+        self.width = if w == 0 { FALLBACK.0 } else { w };
+        self.height = if h == 0 { FALLBACK.1 } else { h };
+        // Later configures are resizes; both cases want a redraw at the new size.
+        self.configured = true;
+        self.draw();
+    }
+}
+
+impl CompositorHandler for App {
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        factor: i32,
+    ) {
+        self.scale = factor.max(1);
+        if self.configured {
+            self.draw();
+        }
+    }
+
+    fn transform_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+    }
+
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
     ) {
     }
 }
+
+impl KeyboardHandler for App {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: &wl_surface::WlSurface,
+        _: u32,
+        _: &[u32],
+        _: &[Keysym],
+    ) {
+    }
+
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: &wl_surface::WlSurface,
+        _: u32,
+    ) {
+    }
+
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        event: KeyEvent,
+    ) {
+        // Phase 5 fills in typing and navigation; dismissal works now so the window is
+        // never unkillable while the rest is being built.
+        if event.keysym == Keysym::Escape {
+            self.exit = true;
+        }
+    }
+
+    /// SCTK drives repeat from its own timer, so held keys reach us here rather than as a
+    /// stream of presses. Phase 5 routes both through the same handler.
+    fn repeat_key(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        kbd: &wl_keyboard::WlKeyboard,
+        serial: u32,
+        event: KeyEvent,
+    ) {
+        self.press_key(conn, qh, kbd, serial, event);
+    }
+
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: KeyEvent,
+    ) {
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: u32,
+        _: Modifiers,
+        _: RawModifiers,
+        _: u32,
+    ) {
+    }
+}
+
+impl PointerHandler for App {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            let PointerEventKind::Press { .. } = event.kind else {
+                continue;
+            };
+            // Clicking outside the card dismisses, the way a menu does. Inside the card is
+            // Phase 5's hit-testing.
+            let (cx, cy) = render::card_origin(self.width as f64, self.height as f64);
+            let (px, py) = event.position;
+            let outside = px < cx
+                || py < cy
+                || px >= cx + render::CARD_W
+                || py >= cy + render::CARD_H;
+            if outside {
+                self.exit = true;
+            }
+        }
+    }
+}
+
+impl SeatHandler for App {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        match capability {
+            Capability::Keyboard if self.keyboard.is_none() => {
+                match self.seat.get_keyboard(qh, &seat, None) {
+                    Ok(k) => self.keyboard = Some(k),
+                    Err(e) => eprintln!("emoji-picker: no keyboard ({e})"),
+                }
+            }
+            Capability::Pointer if self.pointer.is_none() => {
+                match self.seat.get_pointer(qh, &seat) {
+                    Ok(p) => self.pointer = Some(p),
+                    Err(e) => eprintln!("emoji-picker: no pointer ({e})"),
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
+        match capability {
+            Capability::Keyboard => {
+                if let Some(k) = self.keyboard.take() {
+                    k.release();
+                }
+            }
+            Capability::Pointer => {
+                if let Some(p) = self.pointer.take() {
+                    p.release();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl OutputHandler for App {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output
+    }
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+}
+
+impl ShmHandler for App {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+delegate_registry!(App);
+
+impl ProvidesRegistryState for App {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry
+    }
+    registry_handlers![OutputState, SeatState];
+}
+
+smithay_client_toolkit::delegate_dispatch2!(App);
