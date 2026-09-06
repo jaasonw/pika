@@ -17,7 +17,7 @@ Target environment: KDE Plasma 6.7 on Wayland (KWin), Rust + GTK 4.
 | `src/settings.rs` | the settings window |
 | `src/ipc.rs` | single-instance socket |
 | `src/emoji.rs` | the compiled-in emoji table and search |
-| `build.rs` | turns `data/emoji.tsv` into a static Rust array |
+| `build.rs` | turns `data/emoji.tsv` into static tables: the emoji, their tones, group ranges, search masks, and a lookup index |
 | `tools/update-emoji.py` | regenerates `data/emoji.tsv` from Unicode |
 | `protocols/` | vendored `input-method-unstable-v1.xml` |
 
@@ -88,12 +88,30 @@ separate "the mechanism is broken" from "the app's own sequencing is wrong".
   click meant for another window dismisses the picker instead of reaching it.
 - **Key controller in the capture phase.** `GtkSearchEntry` swallows Escape for its own
   clear-search behaviour, so bubble-phase handling never sees it.
-- **One virtualized `GtkListView`** holds recents plus every category. Rows are built on
-  demand, so ~3,900 emoji cost nothing at startup; building real widgets for all of them
-  does not scale.
+- **One `GtkListView`** holds recents plus every category, so the ~3,900 emoji themselves
+  cost nothing — but the rows very much do, see below.
 - **Rows are encoded into a `StringList`** with a marker char for header-vs-emoji-row and
   a unit separator between cells, rather than a custom GObject. Pragmatic; revisit if row
   content grows structure.
+- **`GtkListView` is not as lazy as it looks, and this dominated launch.** It builds a
+  widget for every item handed to it, up to a working set of roughly 205 — measured, and
+  reproducible with a standalone GTK program: 1,000-row and 4,000-row models both produce
+  exactly 205 factory `setup` calls. The browse list is 177 rows, *under* that cap, so a
+  full splice built every row: 12 `GtkButton`s each, ~2,600 widgets, 40-60 ms. It was
+  happening twice per launch. Things that do **not** fix it, all tested: `hscrollbar-policy`,
+  making row heights uniform, and waiting for the viewport to be allocated first.
+- **So the list is filled head-then-tail.** `rebuild` puts `HEAD_ROWS` (10) rows in
+  synchronously and appends the rest from `glib::idle_add_local_once`. Appending does not
+  rebuild the rows already there, so the tail is genuinely free of the first frame.
+  `Picker::fill` is a generation counter: a keystroke landing before the idle runs bumps
+  it and the stale tail drops itself. A section longer than the head budget is split
+  mid-run, which is what keeps a 500-hit search from building 42 rows on the keystroke.
+- **`Picker::new` must not populate the list.** Every caller presents the window straight
+  after, and `present` fills it; doing both cost an entire extra splice.
+- **`View` precomputes what the scroll path reads.** `offsets` is a prefix sum so
+  `offset()` is an index rather than a walk (`sync_active_tab` calls it on every scroll
+  tick), and `row_of` inverts `rows` so the bind handler does not scan for each row that
+  scrolls past.
 - **Section jumps compute pixel offsets** from `CELL` and `HEADER_H` instead of measuring
   widgets, since virtualized rows may not exist yet. **Those constants must match the
   CSS** — restyling row padding without updating them breaks tab navigation silently.
@@ -108,9 +126,17 @@ The generated table lists every tone variant as its own entry, which is why Peop
 holds ~2,400 of the ~3,900 rows. Showing them all would fill the grid with near-identical
 hands and bury real hits in search, so:
 
-- `by_group()` and `search()` return **base emoji only**, filtered on `has_tone()`.
-- `with_tone()` maps a base to its toned form through a map built once on first use, and
-  returns the input unchanged for emoji that take no tone.
+- **The table is laid out base-first.** `build.rs` emits the 1,914 base emoji in tab-group
+  order, then every tone variant, and publishes `BASE_COUNT` and `GROUP_RANGES` alongside.
+  `by_group()` is therefore a slice and `search()` a prefix — neither filters. This
+  replaced a `has_tone()` call per entry per group, which was ~35,000 char scans a rebuild.
+- **`Emoji::toned()` is an array index.** Each entry carries `tones: [&str; 5]`, with
+  emoji that take no tone repeating themselves, so there is no branch and no lookup. The
+  old `with_tone()` built a `HashMap` on first use, at a cost of ~3,900 `String`
+  allocations on the launch path. The free `with_tone(ch, tone)` remains for callers
+  holding only a string, such as the sample hand in the settings window.
+- `find()` binary-searches `BY_CH`, a build-time index sorted by sequence, rather than
+  scanning all 3,944 entries — it runs per arrow key and once per recent.
 - The tone is applied at render time in `ui.rs`, not stored in the data.
 
 Sequences mixing two different tones (couples, handshakes) have no single tone to key
@@ -165,7 +191,29 @@ The count dropped 5,042 → 3,944 when the data moved off the `rofi-emoji` file,
 carried non-fully-qualified duplicates. `src/emoji.rs` asserts a floor of 3,500.
 
 Search ranks whole-word hits above fuzzy subsequence matches; without that, "kitten"
-matched dozens of emoji before the cat.
+matched dozens of emoji before the cat. The tiers are exact name, name prefix, exact
+keyword, then name substring.
+
+Before the fuzzy matcher runs, a **skip mask** rejects most of the table: `build.rs` emits
+a 32-bit set of the letters in each entry's name and keywords, and a candidate whose mask
+lacks a letter the query needs cannot match. Bit 27 marks a field holding non-ASCII (76
+rows, all curly apostrophes) and is never rejected, since `Normalization::Smart` folds
+characters the mask cannot model. `the_skip_mask_never_hides_a_real_hit` guards this by
+brute-forcing the unfiltered matcher and comparing counts — **keep that test** if you
+touch the masks.
+
+## Measuring
+
+Two flags exist because both of these were guessed wrong before they were measured:
+
+- `--bench` times the table and search paths without starting GTK.
+- `--time-launch` reports time to first frame and the settled list state, then exits. A
+  short `model=` count means the idle tail fill never landed.
+
+Cold start is roughly 170 ms, of which ~125 ms is process start, dynamic linking (114
+shared objects) and GTK init — none of it ours. Measure to first frame before believing
+any launch optimisation. `GSK_RENDERER` was tried and makes no difference here: cairo ties
+the default and GL is worse.
 
 ## KDE gotchas that cost real time
 

@@ -13,6 +13,11 @@ const COLUMNS: usize = 12;
 const CELL: i32 = 44;
 const HEADER_H: i32 = 30;
 
+/// How many emoji rows to put in the list before handing control back to GTK. The card
+/// shows about eight; the rest are appended from an idle callback, which keeps the
+/// widget-building for ~170 rows off the path to the first frame.
+const HEAD_ROWS: usize = 10;
+
 /// Row payloads are encoded into a `StringList` rather than a custom GObject: one marker
 /// byte says whether the row is a section header or a run of emoji, and emoji within a
 /// row are separated by the unit separator.
@@ -44,20 +49,28 @@ button.emoji-cell.sel, button.emoji-cell.sel:hover {
 .gear:hover { opacity: 1; background-color: alpha(@theme_fg_color, 0.10); }
 ";
 
-/// One entry in the scrolling list.
+/// One entry in the scrolling list. The header's text lives only in the model, since
+/// nothing here needs to read it back — the view only cares how tall the item is and
+/// whether it holds emoji.
 enum Item {
-    Header(String),
+    Header,
     Row(Vec<&'static str>),
 }
 
-#[derive(Default)]
 struct View {
     items: Vec<Item>,
     /// Item index of each emoji row, so navigation can map a grid row to a list position.
     rows: Vec<usize>,
+    /// Grid row of each item, or `None` for headers. The inverse of `rows`, kept so the
+    /// bind handler does not scan `rows` for every row that scrolls past.
+    row_of: Vec<Option<usize>>,
     /// Item index where each section header sits, in tab order. `None` when a section is
     /// absent (no recents yet, or a search is active).
     sections: Vec<Option<usize>>,
+    /// Running pixel offset of every item, plus a final total. `offsets[i]` is where item
+    /// `i` starts; the scroll handler reads this on every frame, so it is precomputed
+    /// rather than summed on demand.
+    offsets: Vec<f64>,
 }
 
 impl View {
@@ -70,14 +83,100 @@ impl View {
 
     /// Pixel offset of an item, given the fixed heights above.
     fn offset(&self, index: usize) -> f64 {
-        self.items
-            .iter()
-            .take(index)
-            .map(|i| match i {
-                Item::Header(_) => HEADER_H,
-                Item::Row(_) => CELL,
-            })
-            .sum::<i32>() as f64
+        self.offsets.get(index).copied().unwrap_or(0.0)
+    }
+
+    /// Append one item, maintaining the indices that hang off it. Returns its position.
+    ///
+    /// `offsets` stays one longer than `items`, so the tail entry is always the total
+    /// height and `offset(i)` needs no bounds special-casing.
+    fn push(&mut self, item: Item) -> usize {
+        let at = self.items.len();
+        let h = match &item {
+            Item::Header => {
+                self.row_of.push(None);
+                HEADER_H
+            }
+            Item::Row(_) => {
+                self.row_of.push(Some(self.rows.len()));
+                self.rows.push(at);
+                CELL
+            }
+        };
+        self.items.push(item);
+        self.offsets.push(self.offsets[at] + h as f64);
+        at
+    }
+}
+
+/// One unit of list-filling work: a run of emoji, and the section title above it when
+/// this is the start of a section rather than the continuation of one that was split to
+/// keep the first screen small.
+type Chunk = (Option<String>, Vec<&'static str>);
+
+/// Append a run of emoji to the view and to the encoded rows that back it, returning the
+/// item index of its header. Empty runs are skipped entirely, which is how "no recents
+/// yet" reads as an absent tab rather than a blank one.
+///
+/// `encoded` is positional: entry `i` describes the item `encoded.len()` behind the end
+/// of `view`, so a caller filling a tail can splice it in at the offset it started from.
+fn push_section(
+    view: &mut View,
+    encoded: &mut Vec<String>,
+    title: Option<&str>,
+    cells: &[&'static str],
+) -> Option<usize> {
+    if cells.is_empty() {
+        return None;
+    }
+    let at = title.map(|t| {
+        let at = view.push(Item::Header);
+        encoded.push(format!("{HEADER_TAG}{}", t.to_uppercase()));
+        at
+    });
+    for chunk in cells.chunks(COLUMNS) {
+        view.push(Item::Row(chunk.to_vec()));
+        encoded.push(format!("{ROW_TAG}{}", chunk.join(&SEP.to_string())));
+    }
+    at
+}
+
+/// Fill from `queue` until `max_rows` emoji rows are in, splitting the run in progress if
+/// it would overshoot. Section starts are recorded in `view.sections`; a continuation of
+/// a split run records nothing, since it carries no header and no tab points at it.
+fn fill(view: &mut View, encoded: &mut Vec<String>, queue: &mut Vec<Chunk>, max_rows: usize) {
+    while view.rows.len() < max_rows {
+        if queue.is_empty() {
+            return;
+        }
+        let (title, cells) = queue.remove(0);
+        // At least one row of room, since the loop guard just passed.
+        let room = (max_rows - view.rows.len()) * COLUMNS;
+        if cells.len() > room {
+            let at = push_section(view, encoded, title.as_deref(), &cells[..room]);
+            if title.is_some() {
+                view.sections.push(at);
+            }
+            queue.insert(0, (None, cells[room..].to_vec()));
+            return;
+        }
+        let at = push_section(view, encoded, title.as_deref(), &cells);
+        if title.is_some() {
+            view.sections.push(at);
+        }
+    }
+}
+
+impl Default for View {
+    fn default() -> Self {
+        View {
+            items: Vec::new(),
+            rows: Vec::new(),
+            row_of: Vec::new(),
+            sections: Vec::new(),
+            // The offset of item 0; every push appends the offset of the item after it.
+            offsets: vec![0.0],
+        }
     }
 }
 
@@ -97,6 +196,9 @@ pub struct Picker {
     /// Set while a tab click is driving the scroll, so the scroll handler does not fight
     /// the button it just activated.
     scrolling: Cell<bool>,
+    /// Bumped on every rebuild, so a queued tail fill can tell it has been outrun by a
+    /// newer one — a keystroke landing before the idle callback runs.
+    fill: Cell<u32>,
 }
 
 impl Picker {
@@ -138,6 +240,10 @@ impl Picker {
             .placeholder_text("Search emoji")
             .hexpand(true)
             .build();
+        // GtkSearchEntry waits 150ms after the last keystroke before it emits
+        // search-changed. Searching costs well under a millisecond, so that delay was the
+        // whole of the perceived lag.
+        entry.set_search_delay(30);
 
         let gear = gtk::Button::builder()
             .icon_name("configure")
@@ -214,6 +320,7 @@ impl Picker {
             tone: Cell::new(0),
             tabs: RefCell::new(Vec::new()),
             scrolling: Cell::new(false),
+            fill: Cell::new(0),
         });
 
         let pick = Rc::new(on_pick);
@@ -297,7 +404,9 @@ impl Picker {
                         header.set_visible(false);
                         row.set_visible(true);
                         let cells: Vec<&str> = chars.as_str().split(SEP).collect();
-                        let grid_row = p.view.borrow().rows.iter().position(|&i| i == pos);
+                        // Straight lookup rather than a scan of every row: this runs for
+                        // each row that scrolls into view.
+                        let grid_row = p.view.borrow().row_of.get(pos).copied().flatten();
                         let mut child = row.first_child();
                         for col in 0..COLUMNS {
                             let Some(b) = child.clone().and_downcast::<gtk::Button>() else { break };
@@ -422,18 +531,42 @@ impl Picker {
         }
         window.add_controller(click);
 
-        picker.rebuild();
+        // No rebuild here: every caller presents the window straight afterwards, and
+        // present() fills the list itself. Doing it twice cost a full model splice.
         picker
     }
 
     /// Bring the window up ready for input. Also used by the daemon on each show.
-    pub fn present(&self, recents: Vec<String>, tone: u8) {
+    pub fn present(self: &Rc<Self>, recents: Vec<String>, tone: u8) {
         self.tone.set(tone);
         *self.recents.borrow_mut() = recents;
-        self.entry.set_text("");
-        self.rebuild();
+        // Clearing the box emits search-changed, which rebuilds on its own; only pay for
+        // that when there is actually something to clear.
+        if self.entry.text().is_empty() {
+            self.rebuild();
+        } else {
+            self.entry.set_text("");
+        }
         self.window.present();
         self.entry.grab_focus();
+    }
+
+    /// A one-line summary of the filled list, for `--time-launch`.
+    pub fn debug_state(&self) -> String {
+        let view = self.view.borrow();
+        let sections: Vec<String> = view
+            .sections
+            .iter()
+            .map(|s| s.map_or("-".into(), |i| i.to_string()))
+            .collect();
+        format!(
+            "model={} items={} rows={} height={} sections=[{}]",
+            self.model.n_items(),
+            view.items.len(),
+            view.rows.len(),
+            view.offset(view.items.len()),
+            sections.join(","),
+        )
     }
 
     fn record_selection(&self, ch: &str) {
@@ -451,71 +584,77 @@ impl Picker {
 
     /// Rebuild the list: recents pinned first, then every category in order, or the
     /// search results when the box has text.
-    fn rebuild(&self) {
-        let query = self.entry.text().to_string();
-        let query = query.trim().to_string();
+    ///
+    /// A `GtkListView` builds a widget for every item it is handed, up to a working set
+    /// of roughly 200 — and the browse list is only 177 rows, so a full splice builds all
+    /// of them. Each row is a dozen cells, which is why that splice costs tens of
+    /// milliseconds. So the list is filled in two parts: enough to cover the viewport
+    /// now, and the remainder from an idle callback once the window is up.
+    fn rebuild(self: &Rc<Self>) {
+        let query = self.entry.text().trim().to_string();
+        let tone = self.tone.get();
+        let searching = !query.is_empty();
 
-        let mut items: Vec<Item> = Vec::new();
-        let mut rows: Vec<usize> = Vec::new();
-        let mut sections: Vec<Option<usize>> = Vec::new();
+        // Anything an earlier fill queued belongs to a list that no longer exists.
+        self.fill.set(self.fill.get().wrapping_add(1));
+        let generation = self.fill.get();
 
-        let push_section = |items: &mut Vec<Item>,
-                                rows: &mut Vec<usize>,
-                                title: &str,
-                                cells: Vec<&'static str>| {
-            if cells.is_empty() {
-                return None;
-            }
-            let at = items.len();
-            items.push(Item::Header(title.to_uppercase()));
-            for chunk in cells.chunks(COLUMNS) {
-                rows.push(items.len());
-                items.push(Item::Row(chunk.to_vec()));
-            }
-            Some(at)
-        };
-
-        if !query.is_empty() {
-            let tone = self.tone.get();
-            let hits: Vec<&'static str> = emoji::search(&query)
-                .iter()
-                .map(|e| emoji::with_tone(e.ch, tone))
-                .collect();
-            push_section(&mut items, &mut rows, "results", hits);
-            // No section is meaningful during a search.
-            sections = vec![None; emoji::GROUPS.len() + 1];
+        // Each section, in tab order, as a title and the cells under it.
+        let mut queue: Vec<Chunk> = Vec::new();
+        if searching {
+            let hits = emoji::search(&query).iter().map(|e| e.toned(tone)).collect();
+            queue.push((Some("results".into()), hits));
         } else {
-            let recents: Vec<&'static str> = self
+            let recents = self
                 .recents
                 .borrow()
                 .iter()
                 .filter_map(|ch| emoji::find(ch).map(|e| e.ch))
                 .collect();
-            sections.push(push_section(&mut items, &mut rows, "recents", recents));
+            queue.push((Some("recents".into()), recents));
             for group in emoji::GROUPS {
-                let cells: Vec<&'static str> = emoji::by_group(group)
-                    .map(|e| emoji::with_tone(e.ch, self.tone.get()))
-                    .collect();
-                sections.push(push_section(&mut items, &mut rows, group, cells));
+                let cells = emoji::by_group(group).map(|e| e.toned(tone)).collect();
+                queue.push((Some(group.to_string()), cells));
             }
         }
 
-        let encoded: Vec<String> = items
-            .iter()
-            .map(|i| match i {
-                Item::Header(t) => format!("{HEADER_TAG}{t}"),
-                Item::Row(cells) => {
-                    format!("{ROW_TAG}{}", cells.join(&SEP.to_string()))
-                }
-            })
-            .collect();
+        // Enough to cover the viewport now; the rest waits for an idle turn.
+        let mut view = View::default();
+        let mut encoded: Vec<String> = Vec::new();
+        fill(&mut view, &mut encoded, &mut queue, HEAD_ROWS);
 
-        *self.view.borrow_mut() = View { items, rows, sections };
+        // A search has no meaningful sections, but the tab bar still expects one slot per
+        // tab, so none of them light up.
+        if searching {
+            view.sections = vec![None; emoji::GROUPS.len() + 1];
+        }
+
         self.sel.set((0, 0));
+        let next = encoded.len() as u32;
+        *self.view.borrow_mut() = view;
 
         let refs: Vec<&str> = encoded.iter().map(|s| s.as_str()).collect();
         self.model.splice(0, self.model.n_items(), &refs);
         self.update_footer();
+
+        if queue.is_empty() {
+            return;
+        }
+
+        // The rest goes on once the window has had its chance to draw. Appending leaves
+        // the rows already built alone, so this costs nothing that was paid up front.
+        let p = self.clone();
+        glib::idle_add_local_once(move || {
+            if p.fill.get() != generation {
+                return;
+            }
+            let mut encoded: Vec<String> = Vec::new();
+            // Continuations carry no title, so this appends rows without touching
+            // `sections` — the head already recorded every one that a tab points at.
+            fill(&mut p.view.borrow_mut(), &mut encoded, &mut queue, usize::MAX);
+            let refs: Vec<&str> = encoded.iter().map(|s| s.as_str()).collect();
+            p.model.splice(next, 0, &refs);
+        });
     }
 
     fn move_by(&self, dr: i32, dc: i32) -> glib::Propagation {

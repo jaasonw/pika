@@ -3,11 +3,21 @@ name = "emoji-picker"
 version = "0.1.0"
 edition = "2024"
 
+# A picker that is launched, used and closed in a couple of seconds spends a real share of
+# its life in the dynamic loader, so the binary is built for size and startup rather than
+# for throughput.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
 [dependencies]
 ashpd = { version = "0.13.13", features = ["remote_desktop", "screencast"] }
 async-channel = "2.5.0"
 dirs = "7.0.0"
-gtk4 = "0.11.4"
+# v4_8 is what exposes GtkSearchEntry's search-delay; the target desktop ships 4.22.
+gtk4 = { version = "0.11.4", features = ["v4_8"] }
 gtk4-layer-shell = "0.8.1"
 nucleo-matcher = "0.3.1"
 serde = { version = "1.0.229", features = ["derive"] }

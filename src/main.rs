@@ -25,6 +25,8 @@ usage: emoji-picker [options]
   --print        write the chosen emoji to stdout as well
   --test-im      try the input-method insert on its own and report
   --test-paste   try the portal paste path on its own and report each step
+  --bench        time the emoji table and search, then exit
+  --time-launch  report time to first frame, then exit
   -h, --help     this text
 ";
 
@@ -34,7 +36,15 @@ const PASTE_TIMEOUT: Duration = Duration::from_secs(20);
 /// app does not speak text-input and falling back to the portal.
 const IM_WAIT: Duration = Duration::from_millis(400);
 
+/// Process start, for `--time-launch`. Taken before anything else runs.
+static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn since_start() -> Duration {
+    START.get().map(|t| t.elapsed()).unwrap_or_default()
+}
+
 fn main() -> glib::ExitCode {
+    let _ = START.set(std::time::Instant::now());
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
@@ -48,6 +58,14 @@ fn main() -> glib::ExitCode {
         insert::test_paste(20, 500);
         return glib::ExitCode::SUCCESS;
     }
+    if args.iter().any(|a| a == "--bench") {
+        emoji::bench();
+        return glib::ExitCode::SUCCESS;
+    }
+    // Report how long the window took to reach the screen, then leave. Cold start is
+    // mostly GTK, Wayland and font setup rather than our own work, so the only way to
+    // tell an optimisation from a placebo here is to measure to first frame.
+    let time_launch = args.iter().any(|a| a == "--time-launch");
     let daemon = args.iter().any(|a| a == "--daemon");
     let no_paste = args.iter().any(|a| a == "--no-insert" || a == "--no-paste");
     let always_copy = args.iter().any(|a| a == "--copy");
@@ -195,6 +213,25 @@ fn main() -> glib::ExitCode {
             (st.recents().to_vec(), st.settings().skin_tone)
         };
         p.present(recents, tone);
+
+        if time_launch {
+            // The first frame is the number that matters: everything before it is
+            // invisible to the user, and everything after is already interactive.
+            let app = app.clone();
+            let p = p.clone();
+            let window = p.window.clone();
+            window.add_tick_callback(move |_, _| {
+                println!("first frame at {:?}", since_start());
+                // The list finishes filling from an idle callback, so report the settled
+                // state too: a short count here means the tail never landed.
+                let (app, p) = (app.clone(), p.clone());
+                glib::timeout_add_local_once(Duration::from_millis(500), move || {
+                    println!("settled at {:?}, {}", since_start(), p.debug_state());
+                    app.quit();
+                });
+                glib::ControlFlow::Break
+            });
+        }
 
         // Closing the window without picking should still end a one-shot run.
         if !daemon {
