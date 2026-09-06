@@ -80,7 +80,9 @@ mod tests {
 
     #[test]
     fn table_is_populated() {
-        assert!(EMOJI.len() > 5000, "got {}", EMOJI.len());
+        // Emoji 16 has ~3.9k fully-qualified sequences; a big drop means the
+        // regenerated data file lost something.
+        assert!(EMOJI.len() > 3500, "got {}", EMOJI.len());
         assert!(EMOJI.iter().all(|e| !e.ch.is_empty() && !e.name.is_empty()));
     }
 

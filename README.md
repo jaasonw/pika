@@ -126,6 +126,33 @@ whole switch.
 
 ## Data
 
-Emoji names and keywords come from the `rofi-emoji` data file (CDDL/CC-BY, see
-`data/LICENSE`), compiled into the binary at build time. There is no runtime dependency
-on that package and no data file to read at startup.
+`data/emoji.tsv` is generated from Unicode's own published data and compiled into the
+binary by `build.rs`, so there is no data file to read at startup and no dependency on
+any other package.
+
+There is no emoji "API" to poll - Unicode ships static files, which suits us better,
+since the table is checked in and builds stay offline. Two sources are merged:
+
+- [`emoji-test.txt`](https://unicode.org/Public/emoji/latest/emoji-test.txt) - the
+  authoritative list of fully-qualified emoji, in the official display order, with the
+  group and subgroup each belongs to.
+- [CLDR annotations](https://github.com/unicode-org/cldr/tree/main/common/annotations) -
+  short names and search keywords, and the `annotationsDerived` companion covering skin
+  tone and gender variants.
+
+To refresh after a new Emoji release (roughly annually):
+
+```sh
+python3 tools/update-emoji.py     # rewrites data/emoji.tsv
+cargo test                        # sanity-checks the table and search ranking
+```
+
+Pin a release rather than tracking `main` if you prefer:
+
+```sh
+python3 tools/update-emoji.py --emoji-version 16.0 --cldr-ref release-46
+```
+
+`--locale` takes any locale CLDR annotates, so a non-English build is
+`--locale de`. The script reports how the emoji count moved and warns if any entry
+had to fall back to its `emoji-test.txt` name. Licensing is in `data/LICENSE`.
