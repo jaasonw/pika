@@ -1,10 +1,12 @@
 //! The native Wayland backend: smithay-client-toolkit + cairo + pangocairo, no GTK.
 //!
-//! Phase 3 of the migration - the layer-shell surface and event loop are up and the card is
-//! drawn. The grid, search field and settings mode are still to come; see
+//! The layer-shell surface, event loop, and the keyboard and pointer routing that drives
+//! `Picker`. Insertion and the settings mode are still to come; see
 //! plans/wayland-native-migration.md.
 
+use crate::picker::Picker;
 use crate::render;
+use crate::store::Store;
 use crate::theme::Theme;
 use crate::{Flags, since_start};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
@@ -90,6 +92,9 @@ pub fn run(flags: Flags) -> ExitCode {
         }
     };
 
+    let store = Store::load();
+    let ui = Picker::new(store.recents().to_vec(), store.settings().skin_tone);
+
     let mut app = App {
         registry: RegistryState::new(&globals),
         output: OutputState::new(&globals, &qh),
@@ -103,8 +108,10 @@ pub fn run(flags: Flags) -> ExitCode {
         height: FALLBACK.1,
         scale: 1,
         theme: Theme::load(),
+        ui,
         configured: false,
         reported_first_frame: !flags.time_launch,
+        ctrl: false,
         exit: false,
     };
 
@@ -138,8 +145,11 @@ struct App {
     /// Integer output scale. Fractional scaling is Phase 3 follow-up work.
     scale: i32,
     theme: Theme,
+    ui: Picker,
     configured: bool,
     reported_first_frame: bool,
+    /// Ctrl held, tracked from modifier events so key handling can branch on it.
+    ctrl: bool,
     exit: bool,
 }
 
@@ -183,7 +193,13 @@ impl App {
             };
             let cr = cairo::Context::new(&surface).expect("cairo context");
             cr.scale(self.scale as f64, self.scale as f64);
-            render::frame(&cr, &self.theme, self.width as f64, self.height as f64);
+            render::frame(
+                &cr,
+                &self.theme,
+                &self.ui,
+                self.width as f64,
+                self.height as f64,
+            );
             drop(cr);
             surface.finish();
         }
@@ -320,11 +336,49 @@ impl KeyboardHandler for App {
         _: u32,
         event: KeyEvent,
     ) {
-        // Phase 5 fills in typing and navigation; dismissal works now so the window is
-        // never unkillable while the rest is being built.
-        if event.keysym == Keysym::Escape {
-            self.exit = true;
+        let ctrl = self.ctrl;
+        match event.keysym {
+            Keysym::Escape => {
+                self.exit = true;
+                return;
+            }
+            Keysym::Return | Keysym::KP_Enter => {
+                // Committing is Phase 6 work; for now the choice is reported so the
+                // grid can be exercised end to end.
+                if let Some(ch) = self.ui.selected() {
+                    println!("{ch}");
+                }
+                self.exit = true;
+                return;
+            }
+            Keysym::BackSpace => self.ui.backspace(),
+            Keysym::Left => self.ui.step(0, -1),
+            Keysym::Right => self.ui.step(0, 1),
+            Keysym::Up => self.ui.step(-1, 0),
+            Keysym::Down => self.ui.step(1, 0),
+            Keysym::Page_Up => self.ui.page(false),
+            Keysym::Page_Down => self.ui.page(true),
+            Keysym::Tab => self.ui.cycle_section(false),
+            Keysym::ISO_Left_Tab => self.ui.cycle_section(true),
+            // Ctrl+U clears the query, Ctrl+W drops a word - the line editing a
+            // GtkSearchEntry gave us for free.
+            Keysym::u if ctrl => self.ui.clear_query(),
+            Keysym::w if ctrl => self.ui.delete_word(),
+            _ => {
+                if ctrl {
+                    return;
+                }
+                // `utf8` is what xkb composed for this key, so dead keys and compose
+                // sequences arrive here already resolved.
+                match event.utf8.as_deref() {
+                    Some(t) if !t.is_empty() && !t.chars().any(char::is_control) => {
+                        self.ui.insert(t)
+                    }
+                    _ => return,
+                }
+            }
         }
+        self.draw();
     }
 
     /// SCTK drives repeat from its own timer, so held keys reach us here rather than as a
@@ -356,10 +410,11 @@ impl KeyboardHandler for App {
         _: &QueueHandle<Self>,
         _: &wl_keyboard::WlKeyboard,
         _: u32,
-        _: Modifiers,
+        modifiers: Modifiers,
         _: RawModifiers,
         _: u32,
     ) {
+        self.ctrl = modifiers.ctrl;
     }
 }
 
@@ -371,21 +426,57 @@ impl PointerHandler for App {
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let (vx, vy) = render::viewport_origin(w, h);
+        let mut dirty = false;
+
         for event in events {
-            let PointerEventKind::Press { .. } = event.kind else {
-                continue;
-            };
-            // Clicking outside the card dismisses, the way a menu does. Inside the card is
-            // Phase 5's hit-testing.
-            let (cx, cy) = render::card_origin(self.width as f64, self.height as f64);
             let (px, py) = event.position;
-            let outside = px < cx
-                || py < cy
-                || px >= cx + render::CARD_W
-                || py >= cy + render::CARD_H;
-            if outside {
-                self.exit = true;
+            match event.kind {
+                PointerEventKind::Motion { .. } => {
+                    let hover = self.ui.cell_at(px - vx, py - vy);
+                    if hover != self.ui.hover {
+                        self.ui.hover = hover;
+                        dirty = true;
+                    }
+                }
+                PointerEventKind::Leave { .. } => {
+                    if self.ui.hover.take().is_some() {
+                        dirty = true;
+                    }
+                }
+                PointerEventKind::Press { .. } => {
+                    // Clicking outside the card dismisses, the way a menu does.
+                    let (cx, cy) = render::card_origin(w, h);
+                    let outside = px < cx
+                        || py < cy
+                        || px >= cx + render::CARD_W
+                        || py >= cy + render::CARD_H;
+                    if outside {
+                        self.exit = true;
+                        return;
+                    }
+                    if let Some(cell) = self.ui.cell_at(px - vx, py - vy) {
+                        self.ui.sel = cell;
+                        if let Some(ch) = self.ui.selected() {
+                            println!("{ch}");
+                        }
+                        self.exit = true;
+                        return;
+                    }
+                }
+                PointerEventKind::Axis { vertical, .. } => {
+                    // `absolute` is in surface units; discrete steps come through it too.
+                    if vertical.absolute != 0.0 {
+                        self.ui.scroll_by(vertical.absolute);
+                        dirty = true;
+                    }
+                }
+                _ => {}
             }
+        }
+        if dirty {
+            self.draw();
         }
     }
 }

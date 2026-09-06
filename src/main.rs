@@ -15,6 +15,10 @@ mod ui;
 #[cfg(feature = "native")]
 mod backend_native;
 #[cfg(feature = "native")]
+mod grid;
+#[cfg(feature = "native")]
+mod picker;
+#[cfg(feature = "native")]
 mod render;
 #[cfg(feature = "native")]
 mod theme;
