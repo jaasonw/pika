@@ -5,7 +5,8 @@
 
 use crate::emoji;
 use crate::grid::{self, Row};
-use crate::picker::{self, Picker};
+use crate::picker::{self, Mode, Picker, Setting};
+use crate::store::Settings;
 use crate::theme::{Rgb, Theme};
 use cairo::{Context, Operator};
 use pango::FontDescription;
@@ -17,6 +18,10 @@ const TABS_H: f64 = 30.0;
 const FOOTER_H: f64 = 22.0;
 /// Gaps between the four stacked regions.
 const GAP: f64 = 8.0;
+/// Width reserved at the right of the search row for the gear.
+const GEAR_W: f64 = 28.0;
+/// Height of one settings row, including the gap under it.
+const SETTING_ROW_H: f64 = 40.0;
 
 /// The card is exactly as wide as twelve cells plus its padding, so the grid never has a
 /// ragged right edge.
@@ -83,7 +88,14 @@ impl Fonts {
 ///
 /// The area outside the card is left fully transparent so the desktop shows through and
 /// clicks there read as "dismiss".
-pub fn frame(cr: &Context, theme: &Theme, p: &Picker, surface_w: f64, surface_h: f64) {
+pub fn frame(
+    cr: &Context,
+    theme: &Theme,
+    p: &Picker,
+    set: &Settings,
+    surface_w: f64,
+    surface_h: f64,
+) {
     // Slots come back from the pool holding the previous frame; Source rather than Over so
     // the transparent background actually replaces it instead of compositing onto it.
     cr.set_operator(Operator::Source);
@@ -96,11 +108,121 @@ pub fn frame(cr: &Context, theme: &Theme, p: &Picker, surface_w: f64, surface_h:
     cr.save().unwrap();
     cr.translate(x, y);
     card(cr, theme);
-    search(cr, theme, &fonts, p);
-    tabs(cr, theme, &fonts, p);
-    viewport(cr, theme, &fonts, p);
-    footer(cr, theme, &fonts, p);
+    match p.mode {
+        Mode::Browse => {
+            search(cr, theme, &fonts, p);
+            gear(cr, theme, &fonts);
+            tabs(cr, theme, &fonts, p);
+            viewport(cr, theme, &fonts, p);
+            footer(cr, theme, &fonts, p);
+        }
+        Mode::Settings => settings(cr, theme, &fonts, p, set),
+    }
     cr.restore().unwrap();
+}
+
+/// The gear, top-right of the search row. Drawn dimmed like the GTK build's button.
+fn gear(cr: &Context, theme: &Theme, fonts: &Fonts) {
+    let layout = layout_for(cr, &fonts.small, "\u{2699}\u{fe0f}");
+    let (tw, th) = layout.pixel_size();
+    set_source(cr, theme.window_fg.blend(theme.view_bg, 0.45));
+    cr.move_to(
+        CARD_W - PAD - GEAR_W + (GEAR_W - tw as f64) / 2.0,
+        SEARCH_Y + (SEARCH_H - th as f64) / 2.0,
+    );
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// The settings mode: a title and one row per option, navigated with the arrow keys.
+fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settings) {
+    set_source(cr, theme.window_fg);
+    let layout = layout_for(cr, &fonts.ui_bold, "Emoji Picker Settings");
+    cr.move_to(PAD + 4.0, SEARCH_Y + 6.0);
+    pangocairo::functions::show_layout(cr, &layout);
+
+    let w = CARD_W - PAD * 2.0;
+    for (i, row) in picker::SETTINGS.iter().enumerate() {
+        let y = TABS_Y + 8.0 + i as f64 * SETTING_ROW_H;
+        if i == p.setting {
+            rounded_rect(cr, PAD, y, w, SETTING_ROW_H - 4.0, CELL_RADIUS);
+            set_source(cr, theme.selection_bg);
+            cr.fill().unwrap();
+        }
+        let fg = if i == p.setting {
+            theme.selection_fg
+        } else {
+            theme.window_fg
+        };
+        let (label, value) = setting_text(*row, p, set);
+
+        set_source(cr, fg);
+        let layout = layout_for(cr, &fonts.ui, label);
+        let (_, th) = layout.pixel_size();
+        cr.move_to(PAD + 10.0, y + (SETTING_ROW_H - 4.0 - th as f64) / 2.0);
+        pangocairo::functions::show_layout(cr, &layout);
+
+        if let Some(value) = value {
+            // Values are right-aligned against the card edge, the way a settings list
+            // usually reads.
+            let layout = layout_for(cr, &fonts.ui, &value);
+            let (vw, vh) = layout.pixel_size();
+            cr.move_to(
+                CARD_W - PAD - 10.0 - vw as f64,
+                y + (SETTING_ROW_H - 4.0 - vh as f64) / 2.0,
+            );
+            pangocairo::functions::show_layout(cr, &layout);
+        }
+    }
+
+    set_source(cr, theme.window_fg.blend(theme.window_bg, FOOTER_ALPHA));
+    let layout = layout_for(
+        cr,
+        &fonts.small,
+        "Arrows move and change  \u{2022}  Enter toggles  \u{2022}  Esc goes back",
+    );
+    let (_, th) = layout.pixel_size();
+    cr.move_to(PAD + 4.0, FOOTER_Y + (FOOTER_H - th as f64) / 2.0);
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// A settings row's label and, where it has one, its current value.
+fn setting_text(row: Setting, p: &Picker, set: &Settings) -> (&'static str, Option<String>) {
+    let onoff = |b: bool| Some((if b { "On" } else { "Off" }).to_string());
+    match row {
+        Setting::Insert => ("Insert into the focused field", onoff(set.insert)),
+        Setting::AlwaysCopy => ("Always copy as well", onoff(set.always_copy)),
+        Setting::Tone => (
+            "Skin tone",
+            // The sample hand shows what the choice does, as the GTK buttons did.
+            Some(format!(
+                "{}  {}",
+                emoji::with_tone("\u{270b}", set.skin_tone),
+                tone_name(set.skin_tone)
+            )),
+        ),
+        Setting::RecentLimit => ("Recents to remember", Some(set.recent_limit.to_string())),
+        Setting::ClearRecents => (
+            "Clear recents",
+            p.cleared_recents.then(|| "Cleared".to_string()),
+        ),
+        Setting::ResetPaste => (
+            "Reset paste permission",
+            p.reset_paste
+                .then(|| "KDE will ask again".to_string()),
+        ),
+        Setting::Back => ("Back to the picker", None),
+    }
+}
+
+fn tone_name(tone: u8) -> &'static str {
+    match tone {
+        1 => "Light",
+        2 => "Medium light",
+        3 => "Medium",
+        4 => "Medium dark",
+        5 => "Dark",
+        _ => "Default",
+    }
 }
 
 /// The card itself: filled rounded rectangle with a hairline border.
@@ -117,7 +239,7 @@ fn card(cr: &Context, theme: &Theme) {
 }
 
 fn search(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker) {
-    let w = CARD_W - PAD * 2.0;
+    let w = CARD_W - PAD * 2.0 - GEAR_W;
     rounded_rect(cr, PAD, SEARCH_Y, w, SEARCH_H, CELL_RADIUS);
     set_source(cr, theme.view_bg);
     cr.fill().unwrap();
@@ -283,6 +405,28 @@ fn footer(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker) {
     let (_, th) = layout.pixel_size();
     cr.move_to(PAD + 4.0, FOOTER_Y + (FOOTER_H - th as f64) / 2.0);
     pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// Whether a card-relative point falls on the gear.
+pub fn gear_hit(x: f64, y: f64) -> bool {
+    x >= CARD_W - PAD - GEAR_W && x < CARD_W - PAD && y >= SEARCH_Y && y < SEARCH_Y + SEARCH_H
+}
+
+/// Which settings row a card-relative point falls on, if any.
+pub fn setting_at(x: f64, y: f64) -> Option<usize> {
+    if x < PAD || x >= CARD_W - PAD {
+        return None;
+    }
+    let rel = y - (TABS_Y + 8.0);
+    if rel < 0.0 {
+        return None;
+    }
+    let i = (rel / SETTING_ROW_H) as usize;
+    // The gap under each row is dead space rather than part of the next row.
+    if rel - i as f64 * SETTING_ROW_H >= SETTING_ROW_H - 4.0 {
+        return None;
+    }
+    (i < picker::SETTINGS.len()).then_some(i)
 }
 
 fn layout_for(cr: &Context, font: &FontDescription, text: &str) -> pango::Layout {

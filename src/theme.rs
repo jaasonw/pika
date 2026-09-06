@@ -24,8 +24,10 @@ impl Rgb {
         }
     }
 
-    /// Perceived brightness, used to decide whether the surrounding theme is dark. The
-    /// coefficients are the usual Rec. 601 luma weights.
+    /// Perceived brightness. The coefficients are the usual Rec. 601 luma weights.
+    /// Only the tests read this today; it is the natural place for a light/dark decision
+    /// if one is ever needed.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn luma(&self) -> f64 {
         0.299 * self.r + 0.587 * self.g + 0.114 * self.b
     }
@@ -71,12 +73,6 @@ impl Theme {
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| Theme::parse(&s))
             .unwrap_or(BREEZE_LIGHT)
-    }
-
-    /// True when the card is dark, so the renderer knows which way to push borders and
-    /// dimmed text: a light overlay reads on a dark card and vice versa.
-    pub fn is_dark(&self) -> bool {
-        self.window_bg.luma() < 0.5
     }
 
     /// Pull the five colours we draw with out of a kdeglobals body.
@@ -173,7 +169,7 @@ fixed=Monospace,10
         assert_eq!(t.view_bg, Rgb::from_u8(34, 34, 51));
         assert_eq!(t.selection_bg, Rgb::from_u8(203, 166, 247));
         assert_eq!(t.selection_fg, Rgb::from_u8(30, 30, 46));
-        assert!(t.is_dark());
+        assert!(t.window_bg.luma() < 0.5, "the sample scheme is a dark one");
     }
 
     #[test]

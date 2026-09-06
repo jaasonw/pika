@@ -4,13 +4,70 @@
 //! renderer only reads it, so the interesting behaviour is testable without a compositor.
 
 use crate::grid::{self, Grid};
+use crate::store;
 
 /// Rows of the grid visible at once. The card is sized from this.
 pub const VISIBLE_ROWS: f64 = 8.0;
 /// Height of the scrolling area, in logical pixels.
 pub const VIEWPORT_H: f64 = VISIBLE_ROWS * grid::CELL;
 
+/// Which face of the card is showing. Settings is a mode rather than a second surface:
+/// only one layer surface can hold the keyboard grab, so the GTK build had to hide the
+/// picker to show settings and re-present it afterwards. Drawing both into the same card
+/// removes that dance entirely.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mode {
+    Browse,
+    Settings,
+}
+
+/// A row of the settings mode, in display order.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Setting {
+    Insert,
+    AlwaysCopy,
+    Tone,
+    RecentLimit,
+    ClearRecents,
+    ResetPaste,
+    Back,
+}
+
+pub const SETTINGS: [Setting; 7] = [
+    Setting::Insert,
+    Setting::AlwaysCopy,
+    Setting::Tone,
+    Setting::RecentLimit,
+    Setting::ClearRecents,
+    Setting::ResetPaste,
+    Setting::Back,
+];
+
+/// What a settings row wants done. `Picker` cannot reach the store, so it names the change
+/// and the backend applies it - which also keeps every mutation in one place.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Action {
+    ToggleInsert,
+    ToggleAlwaysCopy,
+    SetTone(u8),
+    SetRecentLimit(usize),
+    ClearRecents,
+    ResetPaste,
+    Close,
+}
+
+/// How far one Left/Right press moves the recents cap. The bounds are the store's, so the
+/// row cannot offer a value `set_recent_limit` would silently clamp away.
+const LIMIT_STEP: usize = 12;
+
 pub struct Picker {
+    pub mode: Mode,
+    /// Selected settings row, when `mode` is Settings.
+    pub setting: usize,
+    /// Set once the recents list has been cleared this session, so the row can say so.
+    pub cleared_recents: bool,
+    /// Set once the portal token has been dropped this session.
+    pub reset_paste: bool,
     pub query: String,
     pub grid: Grid,
     /// Selected cell as (row, column).
@@ -28,6 +85,10 @@ impl Picker {
         let grid = Grid::browse(&recents, tone);
         let sel = grid.first_cell();
         Picker {
+            mode: Mode::Browse,
+            setting: 0,
+            cleared_recents: false,
+            reset_paste: false,
             query: String::new(),
             grid,
             sel,
@@ -35,6 +96,57 @@ impl Picker {
             scroll: 0.0,
             tone,
             recents,
+        }
+    }
+
+    pub fn open_settings(&mut self) {
+        self.mode = Mode::Settings;
+        self.setting = 0;
+        self.hover = None;
+    }
+
+    /// Leave settings, rebuilding the grid so a tone or recents change is reflected.
+    pub fn close_settings(&mut self, recents: Vec<String>, tone: u8) {
+        self.mode = Mode::Browse;
+        self.recents = recents;
+        self.tone = tone;
+        self.rebuild();
+    }
+
+    /// Move between settings rows, clamping rather than wrapping.
+    pub fn step_setting(&mut self, d: i32) {
+        let last = SETTINGS.len() - 1;
+        self.setting = (self.setting as i32 + d).clamp(0, last as i32) as usize;
+    }
+
+    /// Left/Right on the selected row. Only the two rows holding a value respond.
+    pub fn adjust_setting(&self, d: i32, tone: u8, limit: usize) -> Option<Action> {
+        match SETTINGS[self.setting] {
+            Setting::Tone => {
+                let next = (tone as i32 + d).rem_euclid(6) as u8;
+                Some(Action::SetTone(next))
+            }
+            Setting::RecentLimit => {
+                let (lo, hi) = store::RECENT_LIMIT_RANGE;
+                let next = (limit as i32 + LIMIT_STEP as i32 * d).clamp(lo as i32, hi as i32);
+                Some(Action::SetRecentLimit(next as usize))
+            }
+            _ => None,
+        }
+    }
+
+    /// Enter or Space on the selected row.
+    pub fn activate_setting(&self, tone: u8) -> Option<Action> {
+        match SETTINGS[self.setting] {
+            Setting::Insert => Some(Action::ToggleInsert),
+            Setting::AlwaysCopy => Some(Action::ToggleAlwaysCopy),
+            // Activating the tone row cycles it, so the keyboard needs no arrow keys and a
+            // click on the row does something sensible too.
+            Setting::Tone => Some(Action::SetTone((tone + 1) % 6)),
+            Setting::RecentLimit => None,
+            Setting::ClearRecents => Some(Action::ClearRecents),
+            Setting::ResetPaste => Some(Action::ResetPaste),
+            Setting::Back => Some(Action::Close),
         }
     }
 
@@ -269,6 +381,56 @@ mod tests {
         // And one cell to the right.
         let hit = p.cell_at(grid::CELL + 4.0, grid::HEADER_H + 4.0);
         assert_eq!(hit, Some((p.grid.first_cell().0, 1)));
+    }
+
+    #[test]
+    fn settings_rows_clamp_rather_than_wrap() {
+        let mut p = Picker::new(vec![], 0);
+        p.open_settings();
+        assert_eq!(p.mode, Mode::Settings);
+        p.step_setting(-1);
+        assert_eq!(p.setting, 0);
+        for _ in 0..20 {
+            p.step_setting(1);
+        }
+        assert_eq!(p.setting, SETTINGS.len() - 1);
+    }
+
+    #[test]
+    fn the_recents_cap_stays_inside_the_range_the_store_accepts() {
+        let (lo, hi) = store::RECENT_LIMIT_RANGE;
+        let mut p = Picker::new(vec![], 0);
+        p.open_settings();
+        p.setting = SETTINGS.iter().position(|s| *s == Setting::RecentLimit).unwrap();
+        assert_eq!(p.adjust_setting(-1, 0, lo), Some(Action::SetRecentLimit(lo)));
+        assert_eq!(p.adjust_setting(1, 0, hi), Some(Action::SetRecentLimit(hi)));
+        let mid = lo + LIMIT_STEP * 2;
+        assert_eq!(
+            p.adjust_setting(1, 0, mid),
+            Some(Action::SetRecentLimit(mid + LIMIT_STEP))
+        );
+    }
+
+    #[test]
+    fn the_tone_row_cycles_through_all_six() {
+        let mut p = Picker::new(vec![], 0);
+        p.open_settings();
+        p.setting = SETTINGS.iter().position(|s| *s == Setting::Tone).unwrap();
+        assert_eq!(p.activate_setting(0), Some(Action::SetTone(1)));
+        assert_eq!(p.activate_setting(5), Some(Action::SetTone(0)));
+        assert_eq!(p.adjust_setting(-1, 0, 12), Some(Action::SetTone(5)));
+        assert_eq!(p.adjust_setting(1, 5, 12), Some(Action::SetTone(0)));
+    }
+
+    #[test]
+    fn closing_settings_picks_up_the_new_tone_and_recents() {
+        let mut p = Picker::new(vec![], 0);
+        p.open_settings();
+        p.close_settings(vec!["\u{1f680}".to_string()], 3);
+        assert_eq!(p.mode, Mode::Browse);
+        assert_eq!(p.tone, 3);
+        // Recents is now a real section rather than an empty tab slot.
+        assert!(p.grid.sections[0].is_some());
     }
 
     #[test]

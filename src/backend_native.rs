@@ -2,19 +2,20 @@
 //!
 //! The layer-shell surface, event loop, and the keyboard and pointer routing that drives
 //! `Picker`. A committed choice is inserted through the shared `commit` module, the same
-//! two routes the GTK build uses. The settings mode is still to come; see
-//! plans/wayland-native-migration.md.
+//! two routes the GTK build uses. Settings are a second mode on the same card rather than
+//! a second surface; see plans/wayland-native-migration.md.
 
 use crate::commit;
 use crate::ipc;
 use crate::picker::Picker;
 use crate::render;
+use crate::picker::{Action, Mode};
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::{Flags, since_start};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::reexports::calloop::generic::Generic;
-use smithay_client_toolkit::reexports::calloop::{EventLoop, Interest, Mode, PostAction};
+use smithay_client_toolkit::reexports::calloop::{EventLoop, Interest, Mode as PollMode, PostAction};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
@@ -48,7 +49,7 @@ pub fn run(flags: Flags) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (globals, mut queue) = match registry_queue_init(&conn) {
+    let (globals, queue) = match registry_queue_init(&conn) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("emoji-picker: registry init failed ({e})");
@@ -120,6 +121,7 @@ pub fn run(flags: Flags) -> ExitCode {
         scale: 1,
         theme: Theme::load(),
         ui,
+        store: store.clone(),
         configured: false,
         reported_first_frame: !flags.time_launch,
         ctrl: false,
@@ -146,7 +148,7 @@ pub fn run(flags: Flags) -> ExitCode {
     // stops being single-instance.
     match ipc::bind().and_then(|l| l.set_nonblocking(true).map(|()| l)) {
         Ok(listener) => {
-            let source = Generic::new(listener, Interest::READ, Mode::Level);
+            let source = Generic::new(listener, Interest::READ, PollMode::Level);
             let registered = event_loop.handle().insert_source(source, |_, listener, app| {
                 // Level-triggered, so drain every pending connection before returning.
                 while let Ok((mut stream, _)) = listener.accept() {
@@ -230,6 +232,7 @@ struct App {
     scale: i32,
     theme: Theme,
     ui: Picker,
+    store: Rc<RefCell<Store>>,
     configured: bool,
     reported_first_frame: bool,
     /// Ctrl held, tracked from modifier events so key handling can branch on it.
@@ -284,6 +287,7 @@ impl App {
                 &cr,
                 &self.theme,
                 &self.ui,
+                self.store.borrow().settings(),
                 self.width as f64,
                 self.height as f64,
             );
@@ -315,6 +319,73 @@ impl App {
             // Nothing else to wait for yet: with no grid to fill there is no settled state
             // to report, so a --time-launch run ends here.
             self.exit = true;
+        }
+    }
+}
+
+impl App {
+    /// Key handling for the settings mode. Escape and the Back row return to the picker;
+    /// everything else edits a setting and saves it, the way the GTK window did.
+    fn settings_key(&mut self, key: Keysym) {
+        let (tone, limit) = {
+            let st = self.store.borrow();
+            (st.settings().skin_tone, st.settings().recent_limit)
+        };
+        let action = match key {
+            Keysym::Escape => Some(Action::Close),
+            Keysym::Up => {
+                self.ui.step_setting(-1);
+                None
+            }
+            Keysym::Down => {
+                self.ui.step_setting(1);
+                None
+            }
+            Keysym::Left => self.ui.adjust_setting(-1, tone, limit),
+            Keysym::Right => self.ui.adjust_setting(1, tone, limit),
+            Keysym::Return | Keysym::KP_Enter | Keysym::space => {
+                self.ui.activate_setting(tone)
+            }
+            _ => None,
+        };
+        let Some(action) = action else { return };
+        self.apply(action);
+    }
+
+    fn apply(&mut self, action: Action) {
+        {
+            let mut st = self.store.borrow_mut();
+            match action {
+                Action::ToggleInsert => {
+                    let v = st.settings().insert;
+                    st.settings_mut().insert = !v;
+                }
+                Action::ToggleAlwaysCopy => {
+                    let v = st.settings().always_copy;
+                    st.settings_mut().always_copy = !v;
+                }
+                Action::SetTone(t) => st.settings_mut().skin_tone = t,
+                Action::SetRecentLimit(n) => st.set_recent_limit(n),
+                Action::ClearRecents => {
+                    st.clear_recents();
+                    self.ui.cleared_recents = true;
+                }
+                Action::ResetPaste => {
+                    st.clear_restore_token();
+                    self.ui.reset_paste = true;
+                }
+                Action::Close => {}
+            }
+            // Settings save on change, as they did in the GTK window: there is no OK
+            // button to hang the write off.
+            st.save();
+        }
+        if action == Action::Close {
+            let (recents, tone) = {
+                let st = self.store.borrow();
+                (st.recents().to_vec(), st.settings().skin_tone)
+            };
+            self.ui.close_settings(recents, tone);
         }
     }
 }
@@ -424,11 +495,18 @@ impl KeyboardHandler for App {
         event: KeyEvent,
     ) {
         let ctrl = self.ctrl;
+        if self.ui.mode == Mode::Settings {
+            self.settings_key(event.keysym);
+            self.draw();
+            return;
+        }
         match event.keysym {
             Keysym::Escape => {
                 self.exit = true;
                 return;
             }
+            // Ctrl+, is the usual "open preferences" key, and the gear is clickable too.
+            Keysym::comma if ctrl => self.ui.open_settings(),
             Keysym::Return | Keysym::KP_Enter => {
                 self.picked = self.ui.selected();
                 self.exit = true;
@@ -538,6 +616,22 @@ impl PointerHandler for App {
                     if outside {
                         self.exit = true;
                         return;
+                    }
+                    if self.ui.mode == Mode::Settings {
+                        if let Some(i) = render::setting_at(px - cx, py - cy) {
+                            self.ui.setting = i;
+                            let tone = self.store.borrow().settings().skin_tone;
+                            if let Some(action) = self.ui.activate_setting(tone) {
+                                self.apply(action);
+                            }
+                            dirty = true;
+                        }
+                        continue;
+                    }
+                    if render::gear_hit(px - cx, py - cy) {
+                        self.ui.open_settings();
+                        dirty = true;
+                        continue;
                     }
                     if let Some(cell) = self.ui.cell_at(px - vx, py - vy) {
                         self.ui.sel = cell;
