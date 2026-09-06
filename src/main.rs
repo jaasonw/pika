@@ -143,7 +143,11 @@ fn main() -> glib::ExitCode {
                 settings::present(&app, st.clone(), move || {
                     // Back to the picker, with any cleared recents reflected.
                     if let Some(p) = picker.borrow().as_ref() {
-                        p.present(st_inner.borrow().recents().to_vec());
+                        let (recents, tone) = {
+                            let st = st_inner.borrow();
+                            (st.recents().to_vec(), st.settings().skin_tone)
+                        };
+                        p.present(recents, tone);
                     }
                 });
             }
@@ -171,7 +175,11 @@ fn main() -> glib::ExitCode {
                         app.quit();
                     }
                 } else {
-                    p.present(st.borrow().recents().to_vec());
+                    let (recents, tone) = {
+                        let st = st.borrow();
+                        (st.recents().to_vec(), st.settings().skin_tone)
+                    };
+                    p.present(recents, tone);
                 }
             });
         }
@@ -182,7 +190,11 @@ fn main() -> glib::ExitCode {
             std::mem::forget(app.hold());
         }
 
-        p.present(st.borrow().recents().to_vec());
+        let (recents, tone) = {
+            let st = st.borrow();
+            (st.recents().to_vec(), st.settings().skin_tone)
+        };
+        p.present(recents, tone);
 
         // Closing the window without picking should still end a one-shot run.
         if !daemon {

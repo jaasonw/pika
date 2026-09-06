@@ -91,6 +91,8 @@ pub struct Picker {
     /// Selected cell as (grid row, column).
     sel: Cell<(usize, usize)>,
     recents: RefCell<Vec<String>>,
+    /// Fitzpatrick tone applied to emoji that take one; 0 is the default yellow.
+    tone: Cell<u8>,
     tabs: RefCell<Vec<gtk::ToggleButton>>,
     /// Set while a tab click is driving the scroll, so the scroll handler does not fight
     /// the button it just activated.
@@ -209,6 +211,7 @@ impl Picker {
             view: RefCell::new(View::default()),
             sel: Cell::new((0, 0)),
             recents: RefCell::new(recents),
+            tone: Cell::new(0),
             tabs: RefCell::new(Vec::new()),
             scrolling: Cell::new(false),
         });
@@ -424,7 +427,8 @@ impl Picker {
     }
 
     /// Bring the window up ready for input. Also used by the daemon on each show.
-    pub fn present(&self, recents: Vec<String>) {
+    pub fn present(&self, recents: Vec<String>, tone: u8) {
+        self.tone.set(tone);
         *self.recents.borrow_mut() = recents;
         self.entry.set_text("");
         self.rebuild();
@@ -472,7 +476,11 @@ impl Picker {
         };
 
         if !query.is_empty() {
-            let hits: Vec<&'static str> = emoji::search(&query).iter().map(|e| e.ch).collect();
+            let tone = self.tone.get();
+            let hits: Vec<&'static str> = emoji::search(&query)
+                .iter()
+                .map(|e| emoji::with_tone(e.ch, tone))
+                .collect();
             push_section(&mut items, &mut rows, "results", hits);
             // No section is meaningful during a search.
             sections = vec![None; emoji::GROUPS.len() + 1];
@@ -485,7 +493,9 @@ impl Picker {
                 .collect();
             sections.push(push_section(&mut items, &mut rows, "recents", recents));
             for group in emoji::GROUPS {
-                let cells: Vec<&'static str> = emoji::by_group(group).map(|e| e.ch).collect();
+                let cells: Vec<&'static str> = emoji::by_group(group)
+                    .map(|e| emoji::with_tone(e.ch, self.tone.get()))
+                    .collect();
                 sections.push(push_section(&mut items, &mut rows, group, cells));
             }
         }

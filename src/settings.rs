@@ -10,6 +10,7 @@ use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::emoji;
 use crate::store::{RECENT_LIMIT_RANGE, Store};
 
 const CSS: &str = "
@@ -18,6 +19,7 @@ const CSS: &str = "
 .settings-title { font-size: 15px; font-weight: bold; }
 .settings-group { font-size: 11px; font-weight: bold; opacity: 0.55; padding-top: 10px; }
 .settings-hint { font-size: 11px; opacity: 0.6; }
+.tone { font-size: 20px; padding: 2px 4px; min-width: 0; min-height: 0; }
 ";
 
 /// Build and show the settings window. `on_close` runs when it is dismissed, so the
@@ -88,6 +90,41 @@ pub fn present(
             st.save();
         });
     }
+
+    card.append(&group_label("Skin tone"));
+
+    let tones = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(2)
+        .margin_top(6)
+        .css_classes(vec!["tabs".to_string(), "linked".to_string()])
+        .build();
+    let current = store.borrow().settings().skin_tone;
+    // A raised hand in each tone, so the choice shows what it does.
+    let hand = "\u{270b}";
+    let mut first: Option<gtk::ToggleButton> = None;
+    for tone in 0..=5u8 {
+        let b = gtk::ToggleButton::builder()
+            .label(emoji::with_tone(hand, tone))
+            .css_classes(vec!["tone".to_string()])
+            .tooltip_text(tone_name(tone))
+            .build();
+        match &first {
+            Some(f) => b.set_group(Some(f)),
+            None => first = Some(b.clone()),
+        }
+        b.set_active(tone == current);
+        let store = store.clone();
+        b.connect_toggled(move |b| {
+            if b.is_active() {
+                let mut st = store.borrow_mut();
+                st.settings_mut().skin_tone = tone;
+                st.save();
+            }
+        });
+        tones.append(&b);
+    }
+    card.append(&tones);
 
     card.append(&group_label("Recents"));
 
@@ -199,6 +236,17 @@ pub fn present(
     window.add_controller(keys);
 
     window.present();
+}
+
+fn tone_name(tone: u8) -> &'static str {
+    match tone {
+        1 => "Light",
+        2 => "Medium-light",
+        3 => "Medium",
+        4 => "Medium-dark",
+        5 => "Dark",
+        _ => "Default",
+    }
 }
 
 fn group_label(text: &str) -> gtk::Label {

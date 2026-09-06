@@ -13,7 +13,8 @@ Target environment: KDE Plasma 6.7 on Wayland (KWin), Rust + GTK 4.
 | `src/ui.rs` | the window: layer-shell surface, list, search, tabs, keys |
 | `src/im.rs` | insert route 1, as a Wayland input method |
 | `src/insert.rs` | insert route 2, clipboard + RemoteDesktop portal |
-| `src/store.rs` | recents and the portal restore token |
+| `src/store.rs` | recents, settings, and the portal restore token |
+| `src/settings.rs` | the settings window |
 | `src/ipc.rs` | single-instance socket |
 | `src/emoji.rs` | the compiled-in emoji table and search |
 | `build.rs` | turns `data/emoji.tsv` into a static Rust array |
@@ -100,6 +101,32 @@ separate "the mechanism is broken" from "the app's own sequencing is wrong".
   itself makes `StringList` emit items-changed, so the factory rebinds and repaints.
   Tracking bound row widgets in a map looked simpler but went stale as the list recycled
   them: the footer updated while the highlight stayed put.
+
+## Skin tones
+
+The generated table lists every tone variant as its own entry, which is why People & Body
+holds ~2,400 of the ~3,900 rows. Showing them all would fill the grid with near-identical
+hands and bury real hits in search, so:
+
+- `by_group()` and `search()` return **base emoji only**, filtered on `has_tone()`.
+- `with_tone()` maps a base to its toned form through a map built once on first use, and
+  returns the input unchanged for emoji that take no tone.
+- The tone is applied at render time in `ui.rs`, not stored in the data.
+
+Sequences mixing two different tones (couples, handshakes) have no single tone to key
+them under and are skipped, so they appear only in base form. Supporting them means a
+per-person picker; no competitor does it either.
+
+Recents store what was actually picked, so changing the tone does not rewrite history.
+
+## Settings (`src/settings.rs`)
+
+A **second layer-shell surface**, not a plain toplevel: the picker sits on the overlay
+layer and an ordinary window renders underneath it. Only one surface can hold the
+keyboard grab, so the picker hides while settings are open and is re-presented on close.
+
+Settings save on change and feed `finish()`; command-line flags override them for a
+single run.
 
 ## Single instance (`src/ipc.rs`)
 

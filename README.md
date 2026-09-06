@@ -11,6 +11,7 @@ Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
   own header. ~3,900 emoji, straight from Unicode.
 - **Search** by name and keyword — "cat", "kitten" and "smiling face" all land where you
   expect.
+- **Skin tone** applied across the grid, chosen once in settings.
 - **Category tabs** jump to a section, and follow along as you scroll.
 - **Inserts directly** into the focused text field. No clipboard round trip, so your
   clipboard history stays clean. Apps that can't take a direct insert fall back to
@@ -36,9 +37,9 @@ character into your text field — and most either can't, or need privileges to 
 The `wtype` pickers are the trap: they install and run fine, then quietly do nothing,
 because KWin does not implement the protocol they type through.
 
-Where the others are ahead: `im-emoji-picker` and `jockel09/emoji-picker` both offer skin
-tone and gender selectors, kaomoji, and favourites, and rofimoji covers arbitrary Unicode
-characters, not just emoji. This one has none of those yet. It is also KDE-specific by
+Where the others are ahead: `im-emoji-picker` and `jockel09/emoji-picker` both offer a
+gender selector, kaomoji and favourites, and rofimoji covers arbitrary Unicode
+characters, not just emoji. This one has none of those. It is also KDE-specific by
 design, where rofimoji and bemoji run on anything with a dmenu-style launcher.
 
 ## Install
@@ -114,8 +115,11 @@ the fallback paste route. `docs/` explains how to mute it, and why you might not
 
 ## Configuration
 
-Recents and the saved paste permission live in `~/.config/emoji-picker/state.json`.
-Delete it to reset.
+The gear beside the search box opens the settings: whether to insert or only copy,
+whether to always copy as well, the skin tone, how many recents to keep, and a reset for
+the saved paste permission.
+
+Everything lives in `~/.config/emoji-picker/state.json`. Delete it to start over.
 
 ## Contributing
 

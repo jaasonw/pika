@@ -23,6 +23,10 @@ pub struct Settings {
     /// How many recently used emoji to keep.
     #[serde(default = "default_recent_limit")]
     pub recent_limit: usize,
+    /// Fitzpatrick skin tone applied to emoji that take one: 0 is the default yellow,
+    /// 1-5 are light through dark.
+    #[serde(default)]
+    pub skin_tone: u8,
 }
 
 fn default_recent_limit() -> usize {
@@ -35,7 +39,12 @@ fn yes() -> bool {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { insert: true, always_copy: false, recent_limit: DEFAULT_RECENT_LIMIT }
+        Settings {
+            insert: true,
+            always_copy: false,
+            recent_limit: DEFAULT_RECENT_LIMIT,
+            skin_tone: 0,
+        }
     }
 }
 
