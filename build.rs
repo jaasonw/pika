@@ -2,6 +2,7 @@ use std::io::Write;
 
 fn main() {
     println!("cargo:rerun-if-changed=data/emoji.tsv");
+    println!("cargo:rerun-if-changed=protocols/input-method-unstable-v1.xml");
 
     let raw = std::fs::read_to_string("data/emoji.tsv").expect("data/emoji.tsv");
     let out = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("emoji_table.rs");

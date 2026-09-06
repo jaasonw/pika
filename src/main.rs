@@ -1,4 +1,5 @@
 mod emoji;
+mod im;
 mod insert;
 mod ipc;
 mod store;
@@ -18,14 +19,19 @@ usage: emoji-picker [options]
 
   (no options)   show the picker once, insert the choice, exit
   --daemon       stay resident; later invocations pop the existing window instantly
-  --no-paste     copy to the clipboard only, never synthesize Ctrl+V
+  --no-insert    copy to the clipboard only, never insert into the focused field
+  --copy         also put the emoji on the clipboard when it was inserted directly
   --print        write the chosen emoji to stdout as well
-  --test-paste   exercise the portal paste path alone and report each step
+  --test-im      try the input-method insert on its own and report
+  --test-paste   try the portal paste path on its own and report each step
   -h, --help     this text
 ";
 
 /// Upper bound on waiting for the portal, so a hung D-Bus call cannot wedge the app.
 const PASTE_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long to wait for a text field to offer us input-method focus before deciding this
+/// app does not speak text-input and falling back to the portal.
+const IM_WAIT: Duration = Duration::from_millis(400);
 
 fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -33,12 +39,17 @@ fn main() -> glib::ExitCode {
         print!("{USAGE}");
         return glib::ExitCode::SUCCESS;
     }
+    if args.iter().any(|a| a == "--test-im") {
+        im::test_commit();
+        return glib::ExitCode::SUCCESS;
+    }
     if args.iter().any(|a| a == "--test-paste") {
         insert::test_paste(20, 500);
         return glib::ExitCode::SUCCESS;
     }
     let daemon = args.iter().any(|a| a == "--daemon");
-    let no_paste = args.iter().any(|a| a == "--no-paste");
+    let no_paste = args.iter().any(|a| a == "--no-insert" || a == "--no-paste");
+    let always_copy = args.iter().any(|a| a == "--copy");
     let print = args.iter().any(|a| a == "--print");
 
     // Another instance already owns the window: tell it to toggle and get out of the
@@ -59,13 +70,10 @@ fn main() -> glib::ExitCode {
 
     app.connect_activate(move |app| {
         let st = Rc::new(RefCell::new(store::Store::load()));
-        let agent = Rc::new(RefCell::new(if no_paste {
-            None
-        } else {
-            Some(insert::PasteAgent::spawn(
-                st.borrow().restore_token().map(str::to_owned),
-            ))
-        }));
+        // The portal agent is spawned only if the input-method route fails: opening a
+        // RemoteDesktop session is what raises KDE's permission dialog and its
+        // "remote control" notification, and most inserts never need it.
+        let agent: Rc<RefCell<Option<insert::PasteAgent>>> = Rc::new(RefCell::new(None));
 
         let picker: Rc<RefCell<Option<Rc<ui::Picker>>>> = Rc::new(RefCell::new(None));
 
@@ -81,11 +89,7 @@ fn main() -> glib::ExitCode {
                 }
                 st.borrow_mut().record_use(&ch);
 
-                if let Err(e) = insert::copy_to_clipboard(&ch) {
-                    insert::notify(&format!("Could not set the clipboard: {e}"));
-                }
-
-                // Hide first: the paste has to land in whatever had focus before us.
+                // Hide first: the insert has to land in whatever had focus before us.
                 if let Some(p) = picker.borrow().as_ref() {
                     p.window.set_visible(false);
                 }
@@ -96,7 +100,16 @@ fn main() -> glib::ExitCode {
                 let picker = picker.clone();
                 // Let the hide reach the compositor before any key event goes out.
                 glib::timeout_add_local_once(Duration::from_millis(30), move || {
-                    finish(&app, &st, &agent, &picker, daemon, no_paste);
+                    finish(Ctx {
+                        ch: &ch,
+                        app: &app,
+                        st: &st,
+                        agent: &agent,
+                        picker: &picker,
+                        daemon,
+                        no_paste,
+                        always_copy,
+                    });
                 });
             }
         };
@@ -160,50 +173,84 @@ fn main() -> glib::ExitCode {
     code
 }
 
-/// Runs after the window is hidden: paste if we can, then quit or go back to sleep.
-fn finish(
-    app: &gtk::Application,
-    st: &Rc<RefCell<store::Store>>,
-    agent: &Rc<RefCell<Option<insert::PasteAgent>>>,
-    picker: &Rc<RefCell<Option<Rc<ui::Picker>>>>,
+struct Ctx<'a> {
+    ch: &'a str,
+    app: &'a gtk::Application,
+    st: &'a Rc<RefCell<store::Store>>,
+    agent: &'a Rc<RefCell<Option<insert::PasteAgent>>>,
+    picker: &'a Rc<RefCell<Option<Rc<ui::Picker>>>>,
     daemon: bool,
     no_paste: bool,
-) {
-    let mut pasted = false;
-    if let Some(a) = agent.borrow().as_ref() {
-        match a.paste_now(PASTE_TIMEOUT) {
-            insert::Reply::Pasted(token) => {
-                let mut st = st.borrow_mut();
+    always_copy: bool,
+}
+
+/// Runs after the window is hidden: insert the emoji, then quit or go back to sleep.
+///
+/// Two routes, in order of preference:
+/// 1. Commit as an input method. Direct, invisible, needs no permission - but only
+///    reaches apps speaking zwp_text_input, so XWayland clients miss it.
+/// 2. Clipboard plus a portal-synthesized Ctrl+V. Works anywhere, at the cost of a
+///    one-time permission dialog.
+fn finish(cx: Ctx) {
+    let mut inserted = false;
+
+    if !cx.no_paste {
+        match im::commit(cx.ch, IM_WAIT) {
+            Ok(()) => inserted = true,
+            Err(e) => eprintln!("emoji-picker: input method unavailable ({e}), using portal"),
+        }
+    }
+
+    if !inserted || cx.always_copy || cx.no_paste {
+        if let Err(e) = insert::copy_to_clipboard(cx.ch) {
+            eprintln!("emoji-picker: clipboard failed: {e}");
+        }
+    }
+
+    if !inserted && !cx.no_paste {
+        // Only now is a portal session worth its permission prompt.
+        if cx.agent.borrow().is_none() {
+            let token = cx.st.borrow().restore_token().map(str::to_owned);
+            *cx.agent.borrow_mut() = Some(insert::PasteAgent::spawn(token));
+        }
+        let reply = cx
+            .agent
+            .borrow()
+            .as_ref()
+            .map(|a| a.paste_now(PASTE_TIMEOUT));
+        match reply {
+            Some(insert::Reply::Pasted(token)) => {
+                let mut st = cx.st.borrow_mut();
                 st.set_restore_token(token);
                 st.set_paste_denied(false);
-                pasted = true;
+                inserted = true;
             }
-            insert::Reply::Failed(e) => {
+            Some(insert::Reply::Failed(e)) => {
                 eprintln!("emoji-picker: paste failed: {e}");
-                let mut st = st.borrow_mut();
+                let mut st = cx.st.borrow_mut();
                 // Only explain the fallback the first time it happens.
                 if !st.paste_denied() {
-                    insert::notify("Copied. Press Ctrl+V to insert.\nAllow \"Remote Desktop\" to paste automatically.");
+                    insert::notify(
+                        "Copied. Press Ctrl+V to insert.\nAllow \"Remote Desktop\" to paste automatically.",
+                    );
                     st.set_paste_denied(true);
                 }
             }
+            None => {}
         }
+        // The session is single-use once started; drop it so the next pick gets a fresh
+        // one rather than a spent handle.
+        *cx.agent.borrow_mut() = None;
     }
-    if !pasted && no_paste {
+
+    if !inserted && cx.no_paste {
         insert::notify("Copied to clipboard.");
     }
-    st.borrow().save();
+    cx.st.borrow().save();
 
-    if daemon {
-        // The session is single-use once started; get a fresh agent for the next pick.
-        let token = st.borrow().restore_token().map(str::to_owned);
-        *agent.borrow_mut() = if no_paste {
-            None
-        } else {
-            Some(insert::PasteAgent::spawn(token))
-        };
-        let _ = picker;
+    if cx.daemon {
+        let _ = cx.picker;
     } else {
-        app.quit();
+        cx.app.quit();
     }
 }

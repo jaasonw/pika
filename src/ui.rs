@@ -3,7 +3,6 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::emoji;
@@ -26,9 +25,17 @@ const CSS: &str = "
    card itself is painted. */
 window.picker { background: transparent; }
 .card { background: @theme_bg_color; border-radius: 12px; border: 1px solid alpha(@theme_fg_color, 0.15); }
-.emoji-cell { font-size: 24px; padding: 0; min-width: 0; min-height: 0; background: none; border: none; box-shadow: none; }
-.emoji-cell:hover { background: alpha(@theme_fg_color, 0.10); border-radius: 6px; }
-.emoji-cell.sel { background: @theme_selected_bg_color; border-radius: 6px; }
+/* Buttons carry a themed background-image as well as a colour, so both have to be
+   cleared for the flat cell look and re-set for the selected one. */
+button.emoji-cell { font-size: 24px; padding: 0; min-width: 0; min-height: 0;
+  background: none; background-image: none; border: none; box-shadow: none;
+  border-radius: 6px; }
+button.emoji-cell:hover { background-color: alpha(@theme_fg_color, 0.10); }
+button.emoji-cell.sel, button.emoji-cell.sel:hover {
+  background-image: none;
+  background-color: @theme_selected_bg_color;
+  color: @theme_selected_fg_color;
+  outline: 2px solid @theme_selected_bg_color; }
 .section { font-size: 11px; font-weight: bold; opacity: 0.55; padding: 8px 4px 2px 4px; }
 .tabs button { font-size: 17px; padding: 2px 5px; min-height: 0; min-width: 0; }
 .footer { font-size: 12px; opacity: 0.7; padding: 2px 8px; }
@@ -80,9 +87,6 @@ pub struct Picker {
     view: RefCell<View>,
     /// Selected cell as (grid row, column).
     sel: Cell<(usize, usize)>,
-    /// Row widgets currently bound, so the selection highlight can move without
-    /// rebuilding the model.
-    bound: RefCell<HashMap<usize, gtk::Box>>,
     recents: RefCell<Vec<String>>,
     tabs: RefCell<Vec<gtk::ToggleButton>>,
     /// Set while a tab click is driving the scroll, so the scroll handler does not fight
@@ -184,7 +188,6 @@ impl Picker {
             footer: footer.clone(),
             view: RefCell::new(View::default()),
             sel: Cell::new((0, 0)),
-            bound: RefCell::new(HashMap::new()),
             recents: RefCell::new(recents),
             tabs: RefCell::new(Vec::new()),
             scrolling: Cell::new(false),
@@ -284,25 +287,11 @@ impl Picker {
                                 b.remove_css_class("sel");
                             }
                         }
-                        if let Some(r) = grid_row {
-                            p.bound.borrow_mut().insert(r, row);
-                        }
                     }
                 }
             }
         });
 
-        factory.connect_unbind({
-            let p = picker.clone();
-            move |_, item| {
-                let item = item.downcast_ref::<gtk::ListItem>().unwrap();
-                let pos = item.position() as usize;
-                let grid_row = p.view.borrow().rows.iter().position(|&i| i == pos);
-                if let Some(r) = grid_row {
-                    p.bound.borrow_mut().remove(&r);
-                }
-            }
-        });
         list.set_factory(Some(&factory));
 
         // Tabs jump to a section rather than filtering: the list always holds everything.
@@ -483,7 +472,6 @@ impl Picker {
             .collect();
 
         *self.view.borrow_mut() = View { items, rows, sections };
-        self.bound.borrow_mut().clear();
         self.sel.set((0, 0));
 
         let refs: Vec<&str> = encoded.iter().map(|s| s.as_str()).collect();
@@ -522,23 +510,27 @@ impl Picker {
             return glib::Propagation::Stop;
         }
         self.sel.set(next);
-        self.paint_selection(prev, false);
-        self.paint_selection(next, true);
+        self.refresh_row(prev.0);
+        if next.0 != prev.0 {
+            self.refresh_row(next.0);
+        }
         self.scroll_into_view(next.0);
         self.update_footer();
         glib::Propagation::Stop
     }
 
-    fn paint_selection(&self, (r, c): (usize, usize), on: bool) {
-        let Some(row) = self.bound.borrow().get(&r).cloned() else { return };
-        let Some(b) = row.observe_children().item(c as u32).and_downcast::<gtk::Button>() else {
-            return;
-        };
-        if on {
-            b.add_css_class("sel");
-        } else {
-            b.remove_css_class("sel");
-        }
+    /// Re-emit one row so the factory rebinds it and repaints the highlight.
+    ///
+    /// Splicing the row's own text back over itself is the only way to make a
+    /// `StringList` say items-changed; tracking the live widgets by hand instead went
+    /// stale as soon as the list recycled one.
+    fn refresh_row(&self, r: usize) {
+        let view = self.view.borrow();
+        let Some(&item) = view.rows.get(r) else { return };
+        drop(view);
+        let pos = item as u32;
+        let Some(text) = self.model.string(pos) else { return };
+        self.model.splice(pos, 1, &[text.as_str()]);
     }
 
     fn update_footer(&self) {

@@ -10,13 +10,28 @@ On this desktop KWin exposes no `zwp_virtual_keyboard_manager_v1`. That is the p
 `wtype` uses, and `wtype` is how `rofimoji`, `rofi-emoji` and friends insert their
 result — so on KDE Wayland they pick an emoji and then do nothing at all.
 
-This picker inserts through the **RemoteDesktop portal** instead, which
-`xdg-desktop-portal-kde` does implement: it puts the emoji on the clipboard, closes its
-window so focus returns to your text field, then has the portal synthesize Ctrl+V.
+Nor is Klipper's paste a route worth copying: it lives inside plasmashell, which KWin
+privileges with direct fake-input access that no third-party binary can obtain.
 
-The first insert raises one KDE permission dialog. Approving it stores a restore token in
-`~/.config/emoji-picker/state.json`, and the dialog never appears again. If you deny it,
-the emoji is still on your clipboard and you press Ctrl+V yourself.
+So this picker inserts by two routes, in order:
+
+**1. As a Wayland input method** (`zwp_input_method_v1`, which KWin does expose). An
+input method does not synthesize keystrokes at all — it commits text straight into
+whatever holds the text-input focus. No permission prompt, no notification, no clipboard
+round trip, and no timing to get wrong. This handles the common case.
+
+It cannot cover everything: only one client may bind the interface, so a running fcitx5,
+ibus or virtual keyboard takes precedence, and it only reaches apps speaking
+`zwp_text_input_v2/v3` — XWayland clients typically do not.
+
+**2. The RemoteDesktop portal**, when the first route finds nobody listening. The emoji
+goes on the clipboard and the portal synthesizes Ctrl+V. This works anywhere, at the cost
+of one KDE permission dialog on first use; approving it stores a restore token in
+`~/.config/emoji-picker/state.json` and the dialog never returns. Deny it and the emoji
+is still on your clipboard for you to paste.
+
+Because the portal session is only opened when route 1 fails, most inserts never touch
+the portal — no prompt, no notification, and nothing added to your clipboard history.
 
 ## Install
 
@@ -58,14 +73,17 @@ toggle and then exits, so the shortcut never stacks up windows.
 
 ### Flags
 
-- `--no-paste` — copy only, never synthesize Ctrl+V.
+- `--no-insert` — copy to the clipboard only; insert into nothing.
+- `--copy` — also put the emoji on the clipboard when it was inserted directly.
 - `--print` — also write the chosen emoji to stdout.
 - `--daemon` — see below.
+- `--test-im` / `--test-paste` — exercise one insert route on its own, for debugging.
 
 ## Silencing the "Remote control session started" popup
 
-Every insert opens a portal session, and KDE announces that with a notification. To mute
-just that one event, create `~/.config/xdg-desktop-portal-kde.notifyrc`:
+Only relevant if inserts keep falling back to the portal — with the input-method route
+working, no notification appears at all. When the portal is used, KDE announces the
+session. To mute just that one event, create `~/.config/xdg-desktop-portal-kde.notifyrc`:
 
 ```ini
 [Event/remotedesktopstarted]
@@ -93,8 +111,13 @@ remove it and pick again to get a fresh permission prompt.
 terminal to see the error. If it works there but not from the hotkey, the shortcut is
 still bound to its old command — see the note under *Bind a hotkey*.
 
-**Nothing is typed, but no error appears.** Three timings in `src/insert.rs` govern this,
-and all three had to be right before inserts worked reliably here:
+**It always falls back to the portal.** Run `emoji-picker` from a terminal and read the
+stderr line explaining why the input method was unavailable. Something else holding
+`zwp_input_method_v1` (fcitx5, ibus, a virtual keyboard) and XWayland-only apps are the
+usual reasons; `--test-im` checks that route on its own.
+
+**Nothing is typed, but no error appears.** This is the portal path. Three timings in
+`src/insert.rs` govern it, and all three had to be right before it worked reliably:
 
 - `FOCUS_SETTLE` (150 ms) - how long to wait after hiding the window. The picker holds an
   exclusive keyboard grab on its layer surface, and the compositor needs a moment to drop
