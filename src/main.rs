@@ -36,8 +36,9 @@ fn main() -> glib::ExitCode {
     let no_paste = args.iter().any(|a| a == "--no-paste");
     let print = args.iter().any(|a| a == "--print");
 
-    // A running daemon owns the UI; hand off to it and exit.
-    if !daemon && ipc::request_show() {
+    // Another instance already owns the window: tell it to toggle and get out of the
+    // way, so a second hotkey press closes the picker rather than opening a second one.
+    if !daemon && ipc::request_toggle() {
         return glib::ExitCode::SUCCESS;
     }
 
@@ -111,14 +112,25 @@ fn main() -> glib::ExitCode {
         let p = ui::Picker::new(app, st.borrow().recents().to_vec(), on_pick, on_dismiss);
         *picker.borrow_mut() = Some(p.clone());
 
-        if daemon {
+        // Both modes serve the socket, so the hotkey toggles in either one.
+        {
             let picker = picker.clone();
             let st = st.clone();
+            let app = app.clone();
             let _ = ipc::serve(move || {
-                if let Some(p) = picker.borrow().as_ref() {
+                let Some(p) = picker.borrow().clone() else { return };
+                if p.window.is_visible() {
+                    p.window.set_visible(false);
+                    if !daemon {
+                        app.quit();
+                    }
+                } else {
                     p.present(st.borrow().recents().to_vec());
                 }
             });
+        }
+
+        if daemon {
             // Hold the process open while the window is hidden. The guard must outlive
             // the closure, and the daemon lives until the process exits anyway.
             std::mem::forget(app.hold());
@@ -137,9 +149,9 @@ fn main() -> glib::ExitCode {
     });
 
     let code = app.run_with_args::<String>(&[]);
-    if daemon {
-        ipc::cleanup();
-    }
+    // We owned the socket in either mode; leaving it behind would make the next
+    // invocation think an instance is still up.
+    ipc::cleanup();
     code
 }
 

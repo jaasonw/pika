@@ -52,7 +52,9 @@ press your key. `Meta+.` and `Meta+;` are both good choices.
 | Esc | cancel |
 | click | insert |
 
-The window opens on **Recents** once you have picked anything.
+The window opens on **Recents** once you have picked anything. Pressing the hotkey again
+while the picker is up closes it: an invocation that finds a running instance tells it to
+toggle and then exits, so the shortcut never stacks up windows.
 
 ### Flags
 
@@ -106,9 +108,10 @@ If you would rather trade ~20 MB of RAM for an instantly appearing window:
 systemctl --user enable --now emoji-picker   # after copying contrib/emoji-picker.service
 ```
 
-The daemon listens on `$XDG_RUNTIME_DIR/emoji-picker.sock`. A plain `emoji-picker` call
-detects the socket and asks the daemon to show its window, so the same hotkey works in
-either mode — starting or stopping the service is the whole switch.
+Whichever process owns the window listens on `$XDG_RUNTIME_DIR/emoji-picker.sock`, in
+both modes. A plain `emoji-picker` call that finds the socket asks the existing instance
+to toggle, so the same hotkey works either way — starting or stopping the service is the
+whole switch.
 
 ## Data
 

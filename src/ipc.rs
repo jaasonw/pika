@@ -1,5 +1,8 @@
-//! Daemon socket. Optional: without a daemon running, every invocation is a fresh
-//! process and this module is only used for the "is one running?" probe.
+//! Single-instance socket, used by both modes.
+//!
+//! Whichever process owns the window binds the socket. A later invocation - the user
+//! hitting the hotkey again - finds it, sends "toggle", and exits, so the shortcut
+//! closes an open picker instead of stacking up processes.
 
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -10,13 +13,13 @@ pub fn socket_path() -> PathBuf {
     PathBuf::from(dir).join("emoji-picker.sock")
 }
 
-/// Ask a running daemon to show its window. Returns false if there is none, in which
-/// case the caller runs standalone.
-pub fn request_show() -> bool {
+/// Ask the running instance to toggle its window. Returns false if there is none, in
+/// which case the caller owns the UI itself.
+pub fn request_toggle() -> bool {
     let Ok(mut stream) = UnixStream::connect(socket_path()) else {
         return false;
     };
-    if stream.write_all(b"show\n").is_err() {
+    if stream.write_all(b"toggle\n").is_err() {
         return false;
     }
     let _ = stream.flush();
@@ -25,12 +28,12 @@ pub fn request_show() -> bool {
     true
 }
 
-/// Listen for show requests, calling `on_show` on the GTK main thread for each.
-pub fn serve(on_show: impl Fn() + 'static) -> std::io::Result<()> {
+/// Listen for toggle requests, calling `on_toggle` on the GTK main thread for each.
+pub fn serve(on_toggle: impl Fn() + 'static) -> std::io::Result<()> {
     let path = socket_path();
     // A stale socket from a killed daemon would block bind(); nothing is listening on it
     // if the connect probe just failed.
-    if !request_show() {
+    if !request_toggle() {
         let _ = std::fs::remove_file(&path);
     }
     let listener = UnixListener::bind(&path)?;
@@ -50,7 +53,7 @@ pub fn serve(on_show: impl Fn() + 'static) -> std::io::Result<()> {
 
     gtk4::glib::spawn_future_local(async move {
         while rx.recv().await.is_ok() {
-            on_show();
+            on_toggle();
         }
     });
     Ok(())
