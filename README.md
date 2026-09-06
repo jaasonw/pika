@@ -18,6 +18,29 @@ Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
 - **Nothing running in the background.** The hotkey starts it, picking an emoji ends it.
   A resident mode is available if you want the window to appear instantly.
 
+## How it compares
+
+Plenty of emoji pickers exist. What separates them on KDE Wayland is how they get the
+character into your text field — and most either can't, or need privileges to do it.
+
+| Picker | Insert mechanism | Extra setup it needs | Works on KDE Wayland |
+| --- | --- | --- | --- |
+| **this one** | Wayland input method, portal paste as fallback | none | yes |
+| plasma-emojier (KDE's own) | clipboard only | none | you paste it yourself |
+| [rofimoji](https://github.com/fdw/rofimoji) | `wtype` | a supported menu (rofi/wofi) | no — KWin has no virtual-keyboard protocol |
+| [bemoji](https://github.com/marty-oehme/bemoji) | `wtype` | a supported menu | no, same reason |
+| [jockel09/emoji-picker](https://github.com/jockel09/emoji-picker) | clipboard + `ydotool` Ctrl+V | ydotool daemon, your user in the `input` group | yes, at the cost of raw `/dev/uinput` access |
+| [im-emoji-picker](https://github.com/GaZaTu/im-emoji-picker) | input method plugin | fcitx5 or ibus installed and configured | yes, if you run one |
+| [Smile](https://github.com/mijorus/smile), Emote | clipboard, GNOME-oriented | none | you paste it yourself |
+
+The `wtype` pickers are the trap: they install and run fine, then quietly do nothing,
+because KWin does not implement the protocol they type through.
+
+Where the others are ahead: `im-emoji-picker` and `jockel09/emoji-picker` both offer skin
+tone and gender selectors, kaomoji, and favourites, and rofimoji covers arbitrary Unicode
+characters, not just emoji. This one has none of those yet. It is also KDE-specific by
+design, where rofimoji and bemoji run on anything with a dmenu-style launcher.
+
 ## Install
 
 ```sh

@@ -39,6 +39,9 @@ button.emoji-cell.sel, button.emoji-cell.sel:hover {
 .section { font-size: 11px; font-weight: bold; opacity: 0.55; padding: 8px 4px 2px 4px; }
 .tabs button { font-size: 17px; padding: 2px 5px; min-height: 0; min-width: 0; }
 .footer { font-size: 12px; opacity: 0.7; padding: 2px 8px; }
+.gear { background: none; background-image: none; border: none; box-shadow: none;
+  opacity: 0.45; padding: 4px; min-width: 0; min-height: 0; }
+.gear:hover { opacity: 1; background-color: alpha(@theme_fg_color, 0.10); }
 ";
 
 /// One entry in the scrolling list.
@@ -100,6 +103,7 @@ impl Picker {
         recents: Vec<String>,
         on_pick: impl Fn(&str) + 'static,
         on_dismiss: impl Fn() + 'static,
+        on_settings: impl Fn() + 'static,
     ) -> Rc<Self> {
         let provider = gtk::CssProvider::new();
         provider.load_from_data(CSS);
@@ -130,10 +134,26 @@ impl Picker {
 
         let entry = gtk::SearchEntry::builder()
             .placeholder_text("Search emoji")
+            .hexpand(true)
+            .build();
+
+        let gear = gtk::Button::builder()
+            .icon_name("configure")
+            .tooltip_text("Settings")
+            .focusable(false)
+            .valign(gtk::Align::Center)
+            .css_classes(vec!["gear".to_string()])
+            .build();
+
+        let search_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
             .margin_top(8)
             .margin_start(8)
             .margin_end(8)
             .build();
+        search_row.append(&entry);
+        search_row.append(&gear);
 
         let tab_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -174,7 +194,7 @@ impl Picker {
             .height_request(440)
             .overflow(gtk::Overflow::Hidden)
             .build();
-        card.append(&entry);
+        card.append(&search_row);
         card.append(&tab_bar);
         card.append(&scroller);
         card.append(&footer);
@@ -195,6 +215,15 @@ impl Picker {
 
         let pick = Rc::new(on_pick);
         let dismiss = Rc::new(on_dismiss);
+
+        {
+            let p = picker.clone();
+            gear.connect_clicked(move |_| {
+                // Hide first: the settings window takes the keyboard grab.
+                p.window.set_visible(false);
+                on_settings();
+            });
+        }
 
         // Each list row is either a section header or a strip of emoji buttons. The
         // buttons are built once and rebound as rows scroll past.

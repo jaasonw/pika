@@ -2,6 +2,7 @@ mod emoji;
 mod im;
 mod insert;
 mod ipc;
+mod settings;
 mod store;
 mod ui;
 
@@ -100,6 +101,10 @@ fn main() -> glib::ExitCode {
                 let picker = picker.clone();
                 // Let the hide reach the compositor before any key event goes out.
                 glib::timeout_add_local_once(Duration::from_millis(30), move || {
+                    let prefs = {
+                        let st = st.borrow();
+                        (st.settings().insert, st.settings().always_copy)
+                    };
                     finish(Ctx {
                         ch: &ch,
                         app: &app,
@@ -107,8 +112,9 @@ fn main() -> glib::ExitCode {
                         agent: &agent,
                         picker: &picker,
                         daemon,
-                        no_paste,
-                        always_copy,
+                        // Flags win for a single run; otherwise the saved settings do.
+                        no_paste: no_paste || !prefs.0,
+                        always_copy: always_copy || prefs.1,
                     });
                 });
             }
@@ -127,7 +133,29 @@ fn main() -> glib::ExitCode {
             }
         };
 
-        let p = ui::Picker::new(app, st.borrow().recents().to_vec(), on_pick, on_dismiss);
+        let on_settings = {
+            let app = app.clone();
+            let st = st.clone();
+            let picker = picker.clone();
+            move || {
+                let st_inner = st.clone();
+                let picker = picker.clone();
+                settings::present(&app, st.clone(), move || {
+                    // Back to the picker, with any cleared recents reflected.
+                    if let Some(p) = picker.borrow().as_ref() {
+                        p.present(st_inner.borrow().recents().to_vec());
+                    }
+                });
+            }
+        };
+
+        let p = ui::Picker::new(
+            app,
+            st.borrow().recents().to_vec(),
+            on_pick,
+            on_dismiss,
+            on_settings,
+        );
         *picker.borrow_mut() = Some(p.clone());
 
         // Both modes serve the socket, so the hotkey toggles in either one.
