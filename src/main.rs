@@ -20,6 +20,7 @@ usage: emoji-picker [options]
   --daemon       stay resident; later invocations pop the existing window instantly
   --no-paste     copy to the clipboard only, never synthesize Ctrl+V
   --print        write the chosen emoji to stdout as well
+  --test-paste   exercise the portal paste path alone and report each step
   -h, --help     this text
 ";
 
@@ -30,6 +31,10 @@ fn main() -> glib::ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print!("{USAGE}");
+        return glib::ExitCode::SUCCESS;
+    }
+    if args.iter().any(|a| a == "--test-paste") {
+        insert::test_paste(20, 500);
         return glib::ExitCode::SUCCESS;
     }
     let daemon = args.iter().any(|a| a == "--daemon");

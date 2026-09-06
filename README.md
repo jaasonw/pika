@@ -93,9 +93,20 @@ remove it and pick again to get a fresh permission prompt.
 terminal to see the error. If it works there but not from the hotkey, the shortcut is
 still bound to its old command — see the note under *Bind a hotkey*.
 
-**The paste lands in the wrong window.** The picker hides itself and waits 80 ms for the
-compositor to hand focus back before typing. On a loaded machine that can be too short;
-raise `FOCUS_SETTLE` in `src/insert.rs` and rebuild.
+**Nothing is typed, but no error appears.** Three timings in `src/insert.rs` govern this,
+and all three had to be right before inserts worked reliably here:
+
+- `FOCUS_SETTLE` (150 ms) - how long to wait after hiding the window. The picker holds an
+  exclusive keyboard grab on its layer surface, and the compositor needs a moment to drop
+  it and give focus back to your text field.
+- `KEY_GAP` (20 ms) - spacing between key events, so Ctrl is unambiguously down before V.
+- `HOLD_AFTER` (300 ms) - how long the portal session stays open after the last key.
+  Without it the process exits, the session closes, and KWin drops keys it has not
+  delivered yet. This was the one that made inserts silently do nothing.
+
+Raise them on a loaded machine. `emoji-picker --test-paste` exercises the portal path on
+its own: it copies `PASTE-OK`, gives you five seconds to focus a field, sends Ctrl+V, and
+reports each step - useful for telling a portal problem apart from a timing one.
 
 ## Resource use
 

@@ -16,9 +16,15 @@ use std::time::Duration;
 const KEY_LEFTCTRL: i32 = 29;
 const KEY_V: i32 = 47;
 
-/// How long to wait after hiding the window before typing, so the compositor has handed
-/// focus back to the original text field.
-const FOCUS_SETTLE: Duration = Duration::from_millis(80);
+/// How long to wait after hiding the window before typing. The picker holds an exclusive
+/// keyboard grab on its layer surface, and the compositor needs a moment to drop it and
+/// hand focus back to the original text field.
+const FOCUS_SETTLE: Duration = Duration::from_millis(150);
+/// Gap between individual key events, so the modifier is unambiguously down before V.
+const KEY_GAP: Duration = Duration::from_millis(20);
+/// The portal session must outlive the events: closing it immediately (which process
+/// exit does) drops keys that KWin has not delivered yet.
+const HOLD_AFTER: Duration = Duration::from_millis(300);
 
 pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     use wl_clipboard_rs::copy::{MimeType, Options, Source};
@@ -152,8 +158,57 @@ async fn paste(
             .notify_keyboard_keycode(session, code, state, NotifyKeyboardKeycodeOptions::default())
             .await
             .map_err(|e| e.to_string())?;
+        tokio::time::sleep(KEY_GAP).await;
     }
+    tokio::time::sleep(HOLD_AFTER).await;
     Ok(())
+}
+
+/// `--test-paste`: open a session, wait for you to focus a field, send Ctrl+V, report.
+/// Keeps the process alive afterwards so the session cannot be torn down mid-delivery.
+pub fn test_paste(gap_ms: u64, settle_ms: u64) {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    rt.block_on(async move {
+        if let Err(e) = copy_to_clipboard("PASTE-OK") {
+            eprintln!("clipboard: {e}");
+        }
+        eprintln!("opening portal session...");
+        let (proxy, session, token) = match open_session(None).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("session failed: {e}");
+                return;
+            }
+        };
+        eprintln!("session up (token {token:?}); focus a text field NOW, sending in 5s");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+
+        for (code, state) in [
+            (KEY_LEFTCTRL, KeyState::Pressed),
+            (KEY_V, KeyState::Pressed),
+            (KEY_V, KeyState::Released),
+            (KEY_LEFTCTRL, KeyState::Released),
+        ] {
+            match proxy
+                .notify_keyboard_keycode(
+                    &session,
+                    code,
+                    state,
+                    NotifyKeyboardKeycodeOptions::default(),
+                )
+                .await
+            {
+                Ok(()) => eprintln!("sent {code} {state:?}"),
+                Err(e) => eprintln!("send {code} failed: {e}"),
+            }
+            tokio::time::sleep(Duration::from_millis(gap_ms)).await;
+        }
+        eprintln!("done; holding session {settle_ms}ms");
+        tokio::time::sleep(Duration::from_millis(settle_ms)).await;
+    });
 }
 
 pub fn notify(body: &str) {
