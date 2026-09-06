@@ -29,9 +29,17 @@ Puts the binary in `~/.local/bin` and a hidden `.desktop` entry in
 
 ### Bind a hotkey
 
-System Settings → Keyboard → Shortcuts → Add New → Application → *Emoji Picker*, then set
-the key. `Meta+.` is a good choice; it currently belongs to Plasma's own emoji picker, so
-clear that one first.
+System Settings → **Keyboard → Shortcuts → Add New → Command or Script**, enter
+`~/.local/bin/emoji-picker` (write the path out in full), click the shortcut field and
+press your key. `Meta+.` and `Meta+;` are both good choices.
+
+> **Add it through System Settings, not by editing config files.** On Plasma 6.7
+> kglobalaccel is part of the `kwin_wayland` process, and it caches each shortcut's
+> command in memory when the session starts. Editing
+> `~/.local/share/applications/*.desktop` or `~/.config/kglobalshortcutsrc` by hand
+> changes nothing until you log out — the old command keeps launching, and
+> `kbuildsycoca6` does not help. Registering through System Settings pushes the new
+> command to the running compositor immediately.
 
 ## Usage
 
@@ -51,6 +59,41 @@ The window opens on **Recents** once you have picked anything.
 - `--no-paste` — copy only, never synthesize Ctrl+V.
 - `--print` — also write the chosen emoji to stdout.
 - `--daemon` — see below.
+
+## Silencing the "Remote control session started" popup
+
+Every insert opens a portal session, and KDE announces that with a notification. To mute
+just that one event, create `~/.config/xdg-desktop-portal-kde.notifyrc`:
+
+```ini
+[Event/remotedesktopstarted]
+Action=
+```
+
+Log out and back in for it to take effect.
+
+**Understand the trade-off first.** That notification is the desktop telling you
+something has gained control of your input. Muting it hides the warning for *every*
+application that starts a remote-control session, not only this one. The portal
+permission itself is untouched — you can still see and revoke it under System Settings →
+Applications → Remote Desktop. Delete the file to get the warning back.
+
+Running with `--no-paste` avoids the portal, and therefore the notification, entirely;
+you press Ctrl+V yourself.
+
+## Troubleshooting
+
+**The emoji is on the clipboard but nothing was typed.** The portal was denied or timed
+out. Check `System Settings → Applications → Remote Desktop`; if this app is listed,
+remove it and pick again to get a fresh permission prompt.
+
+**Nothing happens when I press the hotkey.** Run `~/.local/bin/emoji-picker` from a
+terminal to see the error. If it works there but not from the hotkey, the shortcut is
+still bound to its old command — see the note under *Bind a hotkey*.
+
+**The paste lands in the wrong window.** The picker hides itself and waits 80 ms for the
+compositor to hand focus back before typing. On a loaded machine that can be too short;
+raise `FOCUS_SETTLE` in `src/insert.rs` and rebuild.
 
 ## Resource use
 

@@ -1,7 +1,7 @@
 use gtk4 as gtk;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
-use gtk4_layer_shell::{KeyboardMode, Layer, LayerShell};
+use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -13,7 +13,10 @@ const COLUMNS: u32 = 12;
 const CELL: i32 = 44;
 
 const CSS: &str = "
-window.picker { background: @theme_bg_color; border-radius: 12px; }
+/* The surface covers the screen so clicks outside the card can dismiss it; only the
+   card itself is painted. */
+window.picker { background: transparent; }
+.card { background: @theme_bg_color; border-radius: 12px; border: 1px solid alpha(@theme_fg_color, 0.15); }
 .emoji-cell { font-size: 24px; padding: 4px; }
 .tabs button { font-size: 18px; padding: 2px 6px; min-height: 0; min-width: 0; }
 .footer { font-size: 12px; opacity: 0.7; padding: 2px 8px; }
@@ -30,7 +33,12 @@ pub struct Picker {
 }
 
 impl Picker {
-    pub fn new(app: &gtk::Application, recents: Vec<String>, on_pick: impl Fn(&str) + 'static) -> Rc<Self> {
+    pub fn new(
+        app: &gtk::Application,
+        recents: Vec<String>,
+        on_pick: impl Fn(&str) + 'static,
+        on_dismiss: impl Fn() + 'static,
+    ) -> Rc<Self> {
         let provider = gtk::CssProvider::new();
         provider.load_from_data(CSS);
         if let Some(display) = gdk::Display::default() {
@@ -43,9 +51,7 @@ impl Picker {
 
         let window = gtk::Window::builder()
             .application(app)
-            .default_width(COLUMNS as i32 * CELL + 24)
-            .default_height(400)
-            .resizable(false)
+            .decorated(false)
             .css_classes(vec!["picker".to_string()])
             .build();
 
@@ -53,7 +59,12 @@ impl Picker {
         window.set_layer(Layer::Overlay);
         window.set_keyboard_mode(KeyboardMode::Exclusive);
         window.set_namespace(Some("emoji-picker"));
-        // No anchors set, so the compositor centers the surface.
+        // Anchored to every edge, so the surface spans the output: a click landing
+        // outside the card is the only way the compositor will tell us the user meant
+        // to dismiss us.
+        for edge in [Edge::Top, Edge::Bottom, Edge::Left, Edge::Right] {
+            window.set_anchor(edge, true);
+        }
 
         let entry = gtk::SearchEntry::builder()
             .placeholder_text("Search emoji")
@@ -119,12 +130,20 @@ impl Picker {
             .css_classes(vec!["footer".to_string()])
             .build();
 
-        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        vbox.append(&entry);
-        vbox.append(&tabs);
-        vbox.append(&scroller);
-        vbox.append(&footer);
-        window.set_child(Some(&vbox));
+        let card = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .css_classes(vec!["card".to_string()])
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .width_request(COLUMNS as i32 * CELL + 24)
+            .height_request(420)
+            .overflow(gtk::Overflow::Hidden)
+            .build();
+        card.append(&entry);
+        card.append(&tabs);
+        card.append(&scroller);
+        card.append(&footer);
+        window.set_child(Some(&card));
 
         let picker = Rc::new(Picker {
             window: window.clone(),
@@ -188,6 +207,7 @@ impl Picker {
         }
 
         let pick = Rc::new(on_pick);
+        let dismiss = Rc::new(on_dismiss);
 
         {
             let p = picker.clone();
@@ -202,10 +222,12 @@ impl Picker {
         // The entry keeps focus so typing always filters; navigation keys are
         // intercepted here and applied to the grid selection by hand.
         let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         {
             let p = picker.clone();
             let pick = pick.clone();
             let buttons = buttons.clone();
+            let dismiss = dismiss.clone();
             keys.connect_key_pressed(move |_, key, _, state| {
                 let n = p.model.n_items();
                 let cur = p.selection.selected();
@@ -213,7 +235,7 @@ impl Picker {
                 let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
                 match key {
                     gdk::Key::Escape => {
-                        p.window.close();
+                        dismiss();
                         glib::Propagation::Stop
                     }
                     gdk::Key::Return | gdk::Key::KP_Enter => {
@@ -240,6 +262,23 @@ impl Picker {
             });
         }
         window.add_controller(keys);
+
+        // Click outside the card dismisses, the way a menu does.
+        let click = gtk::GestureClick::new();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        {
+            let card = card.clone();
+            let window = window.clone();
+            let dismiss = dismiss.clone();
+            click.connect_pressed(move |_, _, x, y| {
+                if let Some(bounds) = card.compute_bounds(&window) {
+                    if !bounds.contains_point(&gtk::graphene::Point::new(x as f32, y as f32)) {
+                        dismiss();
+                    }
+                }
+            });
+        }
+        window.add_controller(click);
 
         picker.refresh();
         picker

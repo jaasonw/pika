@@ -95,7 +95,20 @@ fn main() -> glib::ExitCode {
             }
         };
 
-        let p = ui::Picker::new(app, st.borrow().recents().to_vec(), on_pick);
+        let on_dismiss = {
+            let app = app.clone();
+            let picker = picker.clone();
+            move || {
+                if let Some(p) = picker.borrow().as_ref() {
+                    p.window.set_visible(false);
+                }
+                if !daemon {
+                    app.quit();
+                }
+            }
+        };
+
+        let p = ui::Picker::new(app, st.borrow().recents().to_vec(), on_pick, on_dismiss);
         *picker.borrow_mut() = Some(p.clone());
 
         if daemon {
