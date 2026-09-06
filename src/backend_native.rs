@@ -5,6 +5,7 @@
 //! proven and the library/memory floor can be measured, but it does not draw yet.
 //! Phases 2-6 fill this in; see plans/wayland-native-migration.md.
 
+use crate::theme::Theme;
 use crate::{Flags, since_start};
 use std::process::ExitCode;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -38,10 +39,14 @@ pub fn run(_flags: Flags) -> ExitCode {
     layout.set_text("\u{1F600}");
     let (w, h) = layout.pixel_size();
 
+    let theme = Theme::load();
+
     eprintln!(
         "emoji-picker: native backend not implemented yet \
-         (wayland globals={}, emoji layout={w}x{h}, {:?} elapsed)",
+         (wayland globals={}, emoji layout={w}x{h}, {} theme bg={:?}, {:?} elapsed)",
         globals.contents().clone_list().len(),
+        if theme.is_dark() { "dark" } else { "light" },
+        theme.window_bg,
         since_start(),
     );
     ExitCode::FAILURE

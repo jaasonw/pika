@@ -14,6 +14,8 @@ mod ui;
 
 #[cfg(feature = "native")]
 mod backend_native;
+#[cfg(feature = "native")]
+mod theme;
 
 #[cfg(not(any(feature = "gtk", feature = "native")))]
 compile_error!("enable exactly one UI backend: --features gtk (default) or --features native");
