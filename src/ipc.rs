@@ -28,8 +28,11 @@ pub fn request_toggle() -> bool {
     true
 }
 
-/// Listen for toggle requests, calling `on_toggle` on the GTK main thread for each.
-pub fn serve(on_toggle: impl Fn() + 'static) -> std::io::Result<()> {
+/// Listen for toggle requests.
+///
+/// Returns the receiving end rather than invoking a callback: each UI backend has its own
+/// main loop (glib for GTK, calloop for the native client) and has to pump this itself.
+pub fn serve() -> std::io::Result<async_channel::Receiver<()>> {
     let path = socket_path();
     // A stale socket from a killed daemon would block bind(); nothing is listening on it
     // if the connect probe just failed.
@@ -51,12 +54,7 @@ pub fn serve(on_toggle: impl Fn() + 'static) -> std::io::Result<()> {
         }
     });
 
-    gtk4::glib::spawn_future_local(async move {
-        while rx.recv().await.is_ok() {
-            on_toggle();
-        }
-    });
-    Ok(())
+    Ok(rx)
 }
 
 pub fn cleanup() {
