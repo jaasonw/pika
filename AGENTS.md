@@ -212,6 +212,13 @@ settings behaviour testable without a compositor.
 Settings save on change and feed `commit::finish`; command-line flags override them for a
 single run.
 
+The credit line at the foot of the card carries a donate link. It is the one thing in the
+mode that is not a settings row, so it is hit-tested before them, and its position is
+measured rather than assumed — `credit_metrics` shapes both halves so the link's box
+follows whatever the UI font does. Clicking it hands the URL to `xdg-open`, detached, so
+the picker exiting a moment later does not take the browser with it. It is mouse-only;
+nothing focuses it from the keyboard.
+
 The recents cap goes through `Store::set_recent_limit`, which trims the list immediately;
 assigning `settings.recent_limit` directly skips the trim. Its bounds come from
 `store::RECENT_LIMIT_RANGE` so the row cannot offer a value the store would clamp away.

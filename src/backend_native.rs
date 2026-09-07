@@ -39,6 +39,21 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 
+/// Hand a URL to the desktop. Detached, so the picker exiting a moment later does not
+/// take the browser with it.
+fn open_url(url: &str) {
+    use std::process::{Command, Stdio};
+    let spawned = Command::new("xdg-open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Err(e) = spawned {
+        eprintln!("emoji-picker: could not open {url} ({e})");
+    }
+}
+
 /// The clipboard as text, for Ctrl+V into the search box. A missing or non-text clipboard
 /// is not worth reporting: the paste simply does nothing.
 fn clipboard_text() -> Option<String> {
@@ -367,7 +382,8 @@ impl App {
         }
         let over = match self.ui.mode {
             Mode::Settings => {
-                render::tone_at(x, y).is_some()
+                render::donate_hit(x, y)
+                    || render::tone_at(x, y).is_some()
                     || render::stepper_at(x, y).is_some()
                     || render::setting_at(x, y).is_some()
             }
@@ -734,6 +750,10 @@ impl PointerHandler for App {
                         return;
                     }
                     if self.ui.mode == Mode::Settings {
+                        if render::donate_hit(px - cx, py - cy) {
+                            open_url(render::DONATE_URL);
+                            continue;
+                        }
                         // A tone swatch is a target in its own right, so check it before
                         // falling back to "which row was clicked".
                         if let Some(d) = render::stepper_at(px - cx, py - cy) {

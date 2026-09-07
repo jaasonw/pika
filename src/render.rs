@@ -32,6 +32,12 @@ const SWITCH_PAD: f64 = 3.0;
 /// A stepper button either side of the recents number, and the gap they leave for it.
 const STEP_W: f64 = 26.0;
 const STEP_VALUE_W: f64 = 40.0;
+/// The credit line at the foot of the settings mode. Split so the link can be drawn and
+/// hit-tested apart from the text around it.
+const CREDIT_HEAD: &str = "created by jasonw | copyright 2026 | open source under mit license | ";
+pub const CREDIT_LINK: &str = "donate";
+pub const DONATE_URL: &str = "https://ko-fi.com/wayson";
+
 /// Left edge of the search text, and of anything measured against it.
 const TEXT_X: f64 = PAD + 10.0;
 /// Right edge every row's control is aligned against.
@@ -199,15 +205,49 @@ fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settin
         }
     }
 
+    // The key hint sits under the last row; the foot of the card belongs to the credits.
     set_source(cr, theme.window_fg.blend(theme.window_bg, FOOTER_ALPHA));
     let layout = layout_for(
         cr,
         &fonts.small,
         "Click or use the arrows  \u{2022}  Enter activates  \u{2022}  Esc goes back",
     );
-    let (_, th) = layout.pixel_size();
-    cr.move_to(PAD + 4.0, FOOTER_Y + (FOOTER_H - th as f64) / 2.0);
+    cr.move_to(PAD + 12.0, setting_y(picker::SETTINGS.len()) + 6.0);
     pangocairo::functions::show_layout(cr, &layout);
+
+    credits(cr, theme, fonts);
+}
+
+/// Where the credit line starts, and how wide its two halves are. Drawing and hit-testing
+/// both need this, and it is measured rather than assumed so the link stays aligned with
+/// whatever the UI font actually shapes to.
+fn credit_metrics(cr: &Context, fonts: &Fonts) -> (f64, f64, f64) {
+    let head = layout_for(cr, &fonts.small, CREDIT_HEAD);
+    let link = layout_for(cr, &fonts.small, CREDIT_LINK);
+    let (hw, _) = head.pixel_size();
+    let (lw, _) = link.pixel_size();
+    let (hw, lw) = (hw as f64, lw as f64);
+    (((CARD_W - (hw + lw)) / 2.0).max(PAD), hw, lw)
+}
+
+fn credits(cr: &Context, theme: &Theme, fonts: &Fonts) {
+    let (x, head_w, link_w) = credit_metrics(cr, fonts);
+
+    set_source(cr, theme.window_fg.blend(theme.window_bg, 0.45));
+    let layout = layout_for(cr, &fonts.small, CREDIT_HEAD);
+    let (_, th) = layout.pixel_size();
+    let y = FOOTER_Y + (FOOTER_H - th as f64) / 2.0;
+    cr.move_to(x, y);
+    pangocairo::functions::show_layout(cr, &layout);
+
+    // The link is the accent colour and underlined, since a bare word in a footer does not
+    // read as something to click.
+    set_source(cr, theme.selection_bg);
+    let layout = layout_for(cr, &fonts.small, CREDIT_LINK);
+    cr.move_to(x + head_w, y);
+    pangocairo::functions::show_layout(cr, &layout);
+    cr.rectangle(x + head_w, y + th as f64 - 1.0, link_w, 1.0);
+    cr.fill().unwrap();
 }
 
 /// A toggle switch: a filled track with the knob at the end matching its state. The two
@@ -569,6 +609,19 @@ pub fn tone_at(x: f64, y: f64) -> Option<u8> {
     }
     let i = (rel / TONE_SWATCH) as usize;
     (i < TONE_COUNT).then_some(i as u8)
+}
+
+/// Whether a card-relative point falls on the credit line's donate link.
+pub fn donate_hit(x: f64, y: f64) -> bool {
+    let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1) else {
+        return false;
+    };
+    let Ok(cr) = cairo::Context::new(&surface) else {
+        return false;
+    };
+    let fonts = Fonts::new();
+    let (x0, head_w, link_w) = credit_metrics(&cr, &fonts);
+    x >= x0 + head_w && x < x0 + head_w + link_w && y >= FOOTER_Y && y < FOOTER_Y + FOOTER_H
 }
 
 /// Whether a card-relative point falls in the search field.

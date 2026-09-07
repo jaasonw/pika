@@ -156,4 +156,6 @@ Unicode, and the Wayland and KDE specifics that shaped the implementation.
 
 ## Licence
 
-Emoji names and keywords are Unicode data; see `data/LICENSE`.
+MIT — see [LICENSE](LICENSE).
+
+Emoji names and keywords are Unicode data, under their own terms; see `data/LICENSE`.
