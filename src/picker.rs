@@ -4,6 +4,7 @@
 //! renderer only reads it, so the interesting behaviour is testable without a compositor.
 
 use crate::grid::{self, Grid};
+use crate::query::Query;
 use crate::store;
 
 /// Rows of the grid visible at once. The card is sized from this.
@@ -71,7 +72,7 @@ pub struct Picker {
     pub cleared_recents: bool,
     /// Set once the portal token has been dropped this session.
     pub reset_paste: bool,
-    pub query: String,
+    pub query: Query,
     pub grid: Grid,
     /// Selected cell as (row, column).
     pub sel: (usize, usize),
@@ -93,7 +94,7 @@ impl Picker {
             hover_setting: None,
             cleared_recents: false,
             reset_paste: false,
-            query: String::new(),
+            query: Query::default(),
             grid,
             sel,
             hover: None,
@@ -158,48 +159,26 @@ impl Picker {
     /// Rebuild the list after the query, tone or recents changed, and put the selection
     /// back at the top - the old position means nothing against new contents.
     pub fn rebuild(&mut self) {
-        self.grid = if self.query.trim().is_empty() {
+        let query = self.query.text().trim();
+        self.grid = if query.is_empty() {
             Grid::browse(&self.recents, self.tone)
         } else {
-            Grid::search(self.query.trim(), self.tone)
+            Grid::search(query, self.tone)
         };
         self.sel = self.grid.first_cell();
         self.scroll = 0.0;
     }
 
-    /// Append typed text to the query. Takes a whole `&str` rather than a `char` so a
-    /// compose sequence or a paste arrives as one edit.
+    /// Run an edit on the search box, rebuilding the grid only if the text changed.
+    /// Cursor motion returns false from the closure and costs nothing.
+    pub fn edit(&mut self, f: impl FnOnce(&mut Query) -> bool) {
+        if f(&mut self.query) {
+            self.rebuild();
+        }
+    }
+
     pub fn insert(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        self.query.push_str(text);
-        self.rebuild();
-    }
-
-    /// Delete the last *grapheme*, not the last byte: an emoji typed into the search box
-    /// must not come apart into half a surrogate pair's worth of scalar values.
-    pub fn backspace(&mut self) {
-        if self.query.pop().is_some() {
-            self.rebuild();
-        }
-    }
-
-    pub fn clear_query(&mut self) {
-        if !self.query.is_empty() {
-            self.query.clear();
-            self.rebuild();
-        }
-    }
-
-    /// Drop the last word, for Ctrl+W.
-    pub fn delete_word(&mut self) {
-        let trimmed = self.query.trim_end();
-        let cut = trimmed.rfind(' ').map_or(0, |i| i + 1);
-        if cut != self.query.len() {
-            self.query.truncate(cut);
-            self.rebuild();
-        }
+        self.edit(|q| q.insert(text));
     }
 
     /// Move the selection and follow it with the viewport.
@@ -282,10 +261,10 @@ mod tests {
         let mut p = Picker::new(vec![], 0);
         let browse_rows = p.grid.rows.len();
         p.insert("cat");
-        assert_eq!(p.query, "cat");
+        assert_eq!(p.query.text(), "cat");
         assert!(p.grid.sections.iter().all(Option::is_none));
         assert!(p.grid.rows.len() < browse_rows);
-        p.clear_query();
+        p.edit(|q| q.clear());
         assert_eq!(p.grid.rows.len(), browse_rows);
     }
 
@@ -293,31 +272,31 @@ mod tests {
     fn backspace_removes_one_character_at_a_time() {
         let mut p = Picker::new(vec![], 0);
         p.insert("ca");
-        p.backspace();
-        assert_eq!(p.query, "c");
-        p.backspace();
-        assert_eq!(p.query, "");
+        p.edit(|q| q.backspace());
+        assert_eq!(p.query.text(), "c");
+        p.edit(|q| q.backspace());
+        assert_eq!(p.query.text(), "");
         // Backspacing an empty query is a no-op rather than a panic.
-        p.backspace();
-        assert_eq!(p.query, "");
+        p.edit(|q| q.backspace());
+        assert_eq!(p.query.text(), "");
     }
 
     #[test]
     fn backspace_does_not_split_a_multibyte_character() {
         let mut p = Picker::new(vec![], 0);
         p.insert("\u{1f600}");
-        p.backspace();
-        assert_eq!(p.query, "");
+        p.edit(|q| q.backspace());
+        assert_eq!(p.query.text(), "");
     }
 
     #[test]
     fn delete_word_drops_the_trailing_word() {
         let mut p = Picker::new(vec![], 0);
         p.insert("grinning face");
-        p.delete_word();
-        assert_eq!(p.query, "grinning ");
-        p.delete_word();
-        assert_eq!(p.query, "");
+        p.edit(|q| q.delete_word_back());
+        assert_eq!(p.query.text(), "grinning ");
+        p.edit(|q| q.delete_word_back());
+        assert_eq!(p.query.text(), "");
     }
 
     #[test]

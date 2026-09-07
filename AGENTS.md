@@ -20,6 +20,7 @@ reference — see [Two backends](#two-backends).
 | `src/render.rs` | all cairo drawing, in logical pixels |
 | `src/grid.rs` | the list and its geometry: rows, offsets, hit testing, navigation |
 | `src/picker.rs` | UI state: query, selection, scroll, hover, settings mode |
+| `src/query.rs` | the search box: a string with a cursor and line-editing |
 | `src/theme.rs` | desktop colours, read from `kdeglobals` |
 | `src/im.rs` | insert route 1, as a Wayland input method |
 | `src/insert.rs` | insert route 2, clipboard + RemoteDesktop portal |
@@ -145,6 +146,27 @@ update breaks something in the layer-shell path.
 - **Alpha overlays are pre-blended.** `Rgb::blend` composites the tints the GTK stylesheet
   wrote as `alpha(@theme_fg_color, 0.10)` against the known card background, so hover and
   border tints cost no Cairo group.
+
+### The search box (`src/query.rs`)
+
+There is no Wayland text-entry widget and no toolkit here to provide one, so the search box
+is a `String` plus a cursor, written by hand. It covers what a search field actually needs:
+word-wise motion and deletion, Home/End, Delete, Ctrl+U, Ctrl+V, and click-to-position.
+There is no selection because nothing needs one.
+
+**Plain Left and Right belong to the grid**, as they did under GTK — the key controller
+there intercepted navigation keys before `GtkSearchEntry` saw them. That leaves no budget
+for character-wise cursor motion, so the cursor moves by word (Ctrl+arrows) or jumps
+(Home/End, click). `Query` deliberately has no `left`/`right`.
+
+Backspace deletes a `char`, not a grapheme, so an emoji with a skin-tone modifier typed
+into the box comes apart. Nothing is searchable by emoji, so this has not been worth a
+Unicode segmentation dependency.
+
+The caret is positioned with `pango::Layout::cursor_pos` and clicks are resolved with
+`xy_to_index`, rather than by measuring a prefix — Pango already knows where the byte
+offset landed, and `xy_to_index`'s `trailing` count is what puts a click on the right half
+of a character after it instead of before.
 
 ### Colours (`src/theme.rs`)
 

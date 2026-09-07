@@ -19,6 +19,8 @@ mod grid;
 #[cfg(feature = "native")]
 mod picker;
 #[cfg(feature = "native")]
+mod query;
+#[cfg(feature = "native")]
 mod render;
 #[cfg(feature = "native")]
 mod theme;

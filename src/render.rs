@@ -32,6 +32,8 @@ const SWITCH_PAD: f64 = 3.0;
 /// A stepper button either side of the recents number, and the gap they leave for it.
 const STEP_W: f64 = 26.0;
 const STEP_VALUE_W: f64 = 40.0;
+/// Left edge of the search text, and of anything measured against it.
+const TEXT_X: f64 = PAD + 10.0;
 /// Right edge every row's control is aligned against.
 const CONTROL_R: f64 = CARD_W - PAD - 10.0;
 /// A focused row gets a bar down its left edge rather than a flooded background.
@@ -332,19 +334,22 @@ fn search(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker) {
             theme.window_fg.blend(theme.view_bg, PLACEHOLDER_ALPHA),
         )
     } else {
-        (p.query.as_str(), theme.window_fg)
+        (p.query.text(), theme.window_fg)
     };
     set_source(cr, colour);
     let layout = layout_for(cr, &fonts.ui, text);
     let (_, th) = layout.pixel_size();
-    cr.move_to(PAD + 10.0, SEARCH_Y + (SEARCH_H - th as f64) / 2.0);
+    cr.move_to(TEXT_X, SEARCH_Y + (SEARCH_H - th as f64) / 2.0);
     pangocairo::functions::show_layout(cr, &layout);
 
-    // A caret, so an empty box still reads as focused.
+    // The caret sits at the cursor rather than at the end, so word motion and
+    // click-to-position are visible. Pango is asked where the byte offset landed instead
+    // of the text being measured twice.
     if !p.query.is_empty() {
-        let (tw, _) = layout.pixel_size();
+        let (rect, _) = layout.cursor_pos(p.query.cursor() as i32);
+        let x = TEXT_X + rect.x() as f64 / pango::SCALE as f64;
         set_source(cr, theme.window_fg.blend(theme.view_bg, 0.6));
-        cr.rectangle(PAD + 12.0 + tw as f64, SEARCH_Y + 8.0, 1.5, SEARCH_H - 16.0);
+        cr.rectangle(x, SEARCH_Y + 8.0, 1.5, SEARCH_H - 16.0);
         cr.fill().unwrap();
     }
 }
@@ -564,6 +569,40 @@ pub fn tone_at(x: f64, y: f64) -> Option<u8> {
     }
     let i = (rel / TONE_SWATCH) as usize;
     (i < TONE_COUNT).then_some(i as u8)
+}
+
+/// Whether a card-relative point falls in the search field.
+pub fn search_hit(x: f64, y: f64) -> bool {
+    x >= PAD && x < CARD_W - PAD - GEAR_W && y >= SEARCH_Y && y < SEARCH_Y + SEARCH_H
+}
+
+/// The byte offset in `text` that a card-relative x lands on, for click-to-position.
+///
+/// Shaping has to happen against a real context, so this measures on a throwaway 1x1
+/// surface rather than trying to keep the frame's layout alive past the frame.
+pub fn search_index_at(text: &str, x: f64) -> usize {
+    let Ok(surface) = cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1) else {
+        return text.len();
+    };
+    let Ok(cr) = cairo::Context::new(&surface) else {
+        return text.len();
+    };
+    let layout = layout_for(&cr, &Fonts::new().ui, text);
+    let px = ((x - TEXT_X) * pango::SCALE as f64) as i32;
+    let (inside, index, trailing) = layout.xy_to_index(px.max(0), 0);
+    if !inside && px > 0 {
+        // Past the last glyph: the caller means the end of the line.
+        return text.len();
+    }
+    // `trailing` counts characters into the cluster the click fell on, so a click on the
+    // right half of a character puts the cursor after it rather than before.
+    let mut at = index as usize;
+    for _ in 0..trailing {
+        at = (at + 1..=text.len())
+            .find(|i| text.is_char_boundary(*i))
+            .unwrap_or(text.len());
+    }
+    at
 }
 
 /// Whether a card-relative point falls on the gear.

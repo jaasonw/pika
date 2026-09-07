@@ -73,10 +73,25 @@ and `Meta+;` are both good choices.
 | Page Up / Page Down | scroll a screenful |
 | Enter | insert the selected emoji |
 | Tab / Shift-Tab | next / previous category |
-| Ctrl-U / Ctrl-W | clear the search / delete a word |
 | Ctrl-, | open settings |
 | Esc, or click outside | cancel |
-| click | insert |
+| click | insert; a category tab jumps to it |
+
+In the search box:
+
+| Key | Action |
+| --- | --- |
+| Ctrl-← / Ctrl-→ | move the cursor a word |
+| Home / End | start / end of the line |
+| Backspace / Delete | delete either side of the cursor |
+| Ctrl-Backspace, Ctrl-W | delete the word before the cursor |
+| Ctrl-Delete | delete the word after it |
+| Ctrl-U | clear |
+| Ctrl-V | paste |
+| click | put the cursor where you clicked |
+
+Plain ← and → stay with the grid, so the text cursor moves by word rather than by
+character.
 
 Pressing the hotkey again while the picker is open closes it.
 

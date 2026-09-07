@@ -39,6 +39,24 @@ use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface};
 use wayland_client::{Connection, QueueHandle};
 
+/// The clipboard as text, for Ctrl+V into the search box. A missing or non-text clipboard
+/// is not worth reporting: the paste simply does nothing.
+fn clipboard_text() -> Option<String> {
+    use std::io::Read;
+    use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents};
+    let (mut pipe, _) = get_contents(
+        ClipboardType::Regular,
+        Seat::Unspecified,
+        MimeType::Text,
+    )
+    .ok()?;
+    let mut buf = String::new();
+    pipe.read_to_string(&mut buf).ok()?;
+    // A single line: newlines in a search box are noise.
+    let line = buf.lines().next().unwrap_or_default().to_string();
+    (!line.is_empty()).then_some(line)
+}
+
 /// Fallback surface size, used only if the compositor configures us with 0x0 - which it
 /// should not, since we anchor to all four edges and it knows the output size.
 const FALLBACK: (u32, u32) = (1920, 1080);
@@ -353,6 +371,7 @@ impl App {
                     || render::stepper_at(x, y).is_some()
                     || render::setting_at(x, y).is_some()
             }
+            Mode::Browse if render::search_hit(x, y) => return CursorIcon::Text,
             Mode::Browse => {
                 let (vx, vy) = render::viewport_origin(w, h);
                 render::gear_hit(x, y)
@@ -562,7 +581,29 @@ impl KeyboardHandler for App {
                 self.exit = true;
                 return;
             }
-            Keysym::BackSpace => self.ui.backspace(),
+            // Text editing. Plain arrows stay with the grid - this is a picker first, and
+            // the GTK build routed them the same way - so the text cursor is reached with
+            // Ctrl+arrows, Home and End.
+            Keysym::BackSpace if ctrl => self.ui.edit(|q| q.delete_word_back()),
+            Keysym::BackSpace => self.ui.edit(|q| q.backspace()),
+            Keysym::Delete if ctrl => self.ui.edit(|q| q.delete_word_forward()),
+            Keysym::Delete => self.ui.edit(|q| q.delete()),
+            Keysym::Home => self.ui.edit(|q| {
+                q.home();
+                false
+            }),
+            Keysym::End => self.ui.edit(|q| {
+                q.end();
+                false
+            }),
+            Keysym::Left if ctrl => self.ui.edit(|q| {
+                q.word_left();
+                false
+            }),
+            Keysym::Right if ctrl => self.ui.edit(|q| {
+                q.word_right();
+                false
+            }),
             Keysym::Left => self.ui.step(0, -1),
             Keysym::Right => self.ui.step(0, 1),
             Keysym::Up => self.ui.step(-1, 0),
@@ -573,8 +614,15 @@ impl KeyboardHandler for App {
             Keysym::ISO_Left_Tab => self.ui.cycle_section(true),
             // Ctrl+U clears the query, Ctrl+W drops a word - the line editing a
             // GtkSearchEntry gave us for free.
-            Keysym::u if ctrl => self.ui.clear_query(),
-            Keysym::w if ctrl => self.ui.delete_word(),
+            Keysym::u if ctrl => self.ui.edit(|q| q.clear()),
+            Keysym::w if ctrl => self.ui.edit(|q| q.delete_word_back()),
+            Keysym::v if ctrl => {
+                // wl-clipboard-rs is already here for the copy path.
+                match clipboard_text() {
+                    Some(t) => self.ui.insert(&t),
+                    None => return,
+                }
+            }
             _ => {
                 if ctrl {
                     return;
@@ -718,6 +766,15 @@ impl PointerHandler for App {
                     }
                     if render::gear_hit(px - cx, py - cy) {
                         self.ui.open_settings();
+                        dirty = true;
+                        continue;
+                    }
+                    if render::search_hit(px - cx, py - cy) {
+                        let at = render::search_index_at(self.ui.query.text(), px - cx);
+                        self.ui.edit(|q| {
+                            q.set_cursor(at);
+                            false
+                        });
                         dirty = true;
                         continue;
                     }
