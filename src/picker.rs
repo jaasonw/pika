@@ -12,10 +12,8 @@ pub const VISIBLE_ROWS: f64 = 8.0;
 /// Height of the scrolling area, in logical pixels.
 pub const VIEWPORT_H: f64 = VISIBLE_ROWS * grid::CELL;
 
-/// Which face of the card is showing. Settings is a mode rather than a second surface:
-/// only one layer surface can hold the keyboard grab, so the GTK build had to hide the
-/// picker to show settings and re-present it afterwards. Drawing both into the same card
-/// removes that dance entirely.
+/// Which face of the card is showing. Settings is a mode rather than a second surface,
+/// since only one layer surface can hold the keyboard grab.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mode {
     Browse,

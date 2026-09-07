@@ -1,9 +1,7 @@
 //! The picker's contents and geometry, with no toolkit in sight.
 //!
-//! The GTK build had to build a widget per cell, so it filled the list in two passes and
-//! measured the result to find out how tall a row had come out. Here the layout *is* the
-//! arithmetic below, so the whole view is built eagerly - ~160 rows of `&'static str`,
-//! microseconds - and every position is derived rather than measured.
+//! The layout *is* the arithmetic below: the whole view is built eagerly - ~160 rows of
+//! `&'static str`, microseconds - and every position is derived rather than measured.
 
 use crate::emoji;
 

@@ -1,7 +1,5 @@
-//! What happens after the user picks an emoji, independent of which UI drew the grid.
-//!
-//! This is deliberately free of any toolkit types: both the GTK backend and the native
-//! Wayland one hide their window, then hand off to [`finish`].
+//! What happens after the user picks an emoji: the window hides, then hands off to
+//! [`finish`].
 
 use crate::{im, insert, store};
 use std::cell::RefCell;
@@ -20,10 +18,6 @@ pub const HIDE_SETTLE: Duration = Duration::from_millis(30);
 pub struct Ctx<'a> {
     pub ch: &'a str,
     pub st: &'a Rc<RefCell<store::Store>>,
-    pub agent: &'a Rc<RefCell<Option<insert::PasteAgent>>>,
-    /// Ends the process. Called only for one-shot runs; a daemon stays up.
-    pub quit: &'a dyn Fn(),
-    pub daemon: bool,
     pub no_paste: bool,
     pub always_copy: bool,
 }
@@ -58,23 +52,15 @@ pub fn finish(cx: Ctx) {
 
     if !inserted && !cx.no_paste {
         // Only now is a portal session worth its permission prompt.
-        if cx.agent.borrow().is_none() {
-            let token = cx.st.borrow().restore_token().map(str::to_owned);
-            *cx.agent.borrow_mut() = Some(insert::PasteAgent::spawn(token));
-        }
-        let reply = cx
-            .agent
-            .borrow()
-            .as_ref()
-            .map(|a| a.paste_now(PASTE_TIMEOUT));
-        match reply {
-            Some(insert::Reply::Pasted(token)) => {
+        let token = cx.st.borrow().restore_token().map(str::to_owned);
+        match insert::paste_once(token, PASTE_TIMEOUT) {
+            insert::Reply::Pasted(token) => {
                 let mut st = cx.st.borrow_mut();
                 st.set_restore_token(token);
                 st.set_paste_denied(false);
                 inserted = true;
             }
-            Some(insert::Reply::Failed(e)) => {
+            insert::Reply::Failed(e) => {
                 eprintln!("emoji-picker: paste failed: {e}");
                 let mut st = cx.st.borrow_mut();
                 // Only explain the fallback the first time it happens.
@@ -85,11 +71,7 @@ pub fn finish(cx: Ctx) {
                     st.set_paste_denied(true);
                 }
             }
-            None => {}
         }
-        // The session is single-use once started; drop it so the next pick gets a fresh
-        // one rather than a spent handle.
-        *cx.agent.borrow_mut() = None;
     }
 
     // Only when the portal actually covered for the missing text field. A failed paste
@@ -103,8 +85,4 @@ pub fn finish(cx: Ctx) {
         insert::notify("Copied to clipboard.");
     }
     cx.st.borrow().save();
-
-    if !cx.daemon {
-        (cx.quit)();
-    }
 }

@@ -1,4 +1,4 @@
-//! Desktop colours for the native backend, in place of GTK's `@theme_*` CSS variables.
+//! Desktop colours for the native backend.
 //!
 //! Read straight from `~/.config/kdeglobals`. That is a plain file read - a few hundred
 //! microseconds - where the `org.freedesktop.appearance` portal costs a D-Bus round trip on

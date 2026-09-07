@@ -56,7 +56,6 @@ pub const CARD_H: f64 =
 const CARD_RADIUS: f64 = 12.0;
 const CELL_RADIUS: f64 = 6.0;
 
-/// The alphas the GTK stylesheet wrote as `alpha(@theme_fg_color, ...)`.
 const BORDER_ALPHA: f64 = 0.15;
 const HOVER_ALPHA: f64 = 0.10;
 const HEADER_ALPHA: f64 = 0.55;
@@ -145,7 +144,7 @@ pub fn frame(
     cr.restore().unwrap();
 }
 
-/// The gear, top-right of the search row. Drawn dimmed like the GTK build's button.
+/// The gear, top-right of the search row.
 fn gear(cr: &Context, theme: &Theme, fonts: &Fonts) {
     let layout = layout_for(cr, &fonts.small, "\u{2699}\u{fe0f}");
     let (tw, th) = layout.pixel_size();
@@ -250,8 +249,7 @@ fn credits(cr: &Context, theme: &Theme, fonts: &Fonts) {
     cr.fill().unwrap();
 }
 
-/// A toggle switch: a filled track with the knob at the end matching its state. The two
-/// boolean rows used to read "On"/"Off", which says the value but not that it is a control.
+/// A toggle switch: a filled track with the knob at the end matching its state.
 fn switch(cr: &Context, theme: &Theme, y: f64, row_h: f64, on: bool) {
     let x = switch_x();
     let top = y + (row_h - SWITCH_H) / 2.0;
@@ -275,8 +273,7 @@ fn switch(cr: &Context, theme: &Theme, y: f64, row_h: f64, on: bool) {
     cr.fill().unwrap();
 }
 
-/// The recents cap, with a button either side. Without these the row could only be changed
-/// from the keyboard, which left the mouse nothing to do on it at all.
+/// The recents cap, with a button either side so it is clickable, not just keyboard-only.
 fn stepper(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, row_h: f64, value: usize) {
     let x0 = stepper_x();
     let top = y + (row_h - SWITCH_H) / 2.0;
@@ -328,7 +325,8 @@ fn tone_strip(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, row_h: f64, to
             set_source(cr, theme.selection_bg);
             cr.fill().unwrap();
         }
-        let layout = layout_for(cr, &fonts.tab, emoji::with_tone("\u{270b}", i as u8));
+        let wave = emoji::find("\u{270b}").map(|e| e.toned(i as u8)).unwrap_or("\u{270b}");
+        let layout = layout_for(cr, &fonts.tab, wave);
         let (tw, th) = layout.pixel_size();
         cr.move_to(
             x + (TONE_SWATCH - tw as f64) / 2.0,

@@ -6,9 +6,6 @@ use nucleo_matcher::{Config, Matcher};
 #[derive(Clone, Copy, Debug)]
 pub struct Emoji {
     pub ch: &'static str,
-    /// Only read by the tests, which use it to check `GROUP_RANGES` against the data.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub group: &'static str,
     pub name: &'static str,
     pub keywords: &'static str,
     /// `name` pre-folded, so the substring bonus in `search` needs no allocation.
@@ -17,7 +14,7 @@ pub struct Emoji {
     pub name_mask: u32,
     pub kw_mask: u32,
     /// This sequence in each of the five tones; an emoji that takes no tone repeats
-    /// itself, so `with_tone` is an unconditional index.
+    /// itself, so `toned` is an unconditional index.
     pub tones: [&'static str; 5],
 }
 
@@ -30,7 +27,7 @@ include!(concat!(env!("OUT_DIR"), "/emoji_table.rs"));
 pub const TONES: [char; 5] = ['\u{1f3fb}', '\u{1f3fc}', '\u{1f3fd}', '\u{1f3fe}', '\u{1f3ff}'];
 
 /// The base emoji, in tab-bar group order. Tone variants live past this point and are
-/// reachable only through `with_tone` and `find`.
+/// reachable only through `find`.
 fn base() -> &'static [Emoji] {
     &EMOJI[..BASE_COUNT]
 }
@@ -66,15 +63,6 @@ impl Emoji {
     pub fn tonable(&self) -> bool {
         self.tones[0] != self.ch
     }
-}
-
-/// Tone a sequence given only its characters. The grid already holds `&Emoji` and should
-/// call `Emoji::toned`; this is for callers that have just a string, such as the sample
-/// hand in the settings window.
-pub fn with_tone(ch: &'static str, tone: u8) -> &'static str {
-    // An emoji missing from the table stands in for itself, as it did when this walked a
-    // runtime map: better a untoned glyph than an empty button.
-    find(ch).map(|e| e.toned(tone)).unwrap_or(ch)
 }
 
 pub fn find(ch: &str) -> Option<&'static Emoji> {
@@ -181,7 +169,7 @@ pub fn search(query: &str) -> Vec<&'static Emoji> {
 }
 
 /// Time the table work that sits on the launch and keystroke paths. Reached with
-/// `--bench`, alongside the other diagnostic flags, and runs before GTK is touched.
+/// `--bench`, alongside the other diagnostic flags.
 pub fn bench() {
     use std::time::Instant;
 
@@ -218,13 +206,6 @@ mod tests {
         // regenerated data file lost something.
         assert!(EMOJI.len() > 3500, "got {}", EMOJI.len());
         assert!(EMOJI.iter().all(|e| !e.ch.is_empty() && !e.name.is_empty()));
-    }
-
-    #[test]
-    fn groups_cover_the_table() {
-        for e in EMOJI {
-            assert!(GROUPS.contains(&e.group), "unknown group {:?}", e.group);
-        }
     }
 
     #[test]
@@ -301,7 +282,6 @@ mod tests {
         for (i, g) in GROUPS.iter().enumerate() {
             let (a, b) = GROUP_RANGES[i];
             assert!(a <= b && b <= BASE_COUNT, "bad range for {g}");
-            assert!(EMOJI[a..b].iter().all(|e| &e.group == g), "range leaks out of {g}");
         }
         // Every base emoji belongs to exactly one range.
         assert_eq!(GROUP_RANGES.iter().map(|(a, b)| b - a).sum::<usize>(), BASE_COUNT);

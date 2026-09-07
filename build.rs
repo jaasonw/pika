@@ -139,17 +139,16 @@ fn main() {
                 toned
                     .get(&(r.ch.clone(), i))
                     .map(String::as_str)
-                    // Emoji that take no tone stand in for themselves, so `with_tone`
-                    // is an unconditional index.
+                    // Emoji that take no tone stand in for themselves, so `toned` is an
+                    // unconditional index.
                     .unwrap_or(r.ch.as_str())
             })
             .collect();
         writeln!(
             f,
-            "    Emoji {{ ch: {:?}, group: {:?}, name: {:?}, keywords: {:?}, \
+            "    Emoji {{ ch: {:?}, name: {:?}, keywords: {:?}, \
              name_lower: {:?}, name_mask: {:#x}, kw_mask: {:#x}, tones: [{}] }},",
             r.ch,
-            r.group,
             r.name,
             r.keywords,
             r.name.to_lowercase(),

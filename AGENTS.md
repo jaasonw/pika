@@ -7,15 +7,15 @@ Target environment: KDE Plasma 6.7 on Wayland (KWin), Rust.
 
 The picker is a native Wayland client: `smithay-client-toolkit` for the protocol, `cairo`
 and `pangocairo` for drawing, no widget toolkit. It was GTK 4 until the migration recorded
-in `plans/wayland-native-migration.md`, and the GTK implementation is still buildable as a
-reference — see [Two backends](#two-backends).
+in `plans/wayland-native-migration.md`; the GTK backend was removed once the native one
+was the only one being built (see `plans/ponytail-audit-2026-09-06.md`).
 
 ## Layout
 
 | Path | What it holds |
 | --- | --- |
 | `src/main.rs` | CLI, flag parsing, backend dispatch |
-| `src/commit.rs` | `finish()` — the insert decision, shared by both backends |
+| `src/commit.rs` | `finish()` — the insert decision |
 | `src/backend_native.rs` | the native backend: layer surface, calloop loop, key and pointer routing |
 | `src/render.rs` | all cairo drawing, in logical pixels |
 | `src/grid.rs` | the list and its geometry: rows, offsets, hit testing, navigation |
@@ -27,7 +27,6 @@ reference — see [Two backends](#two-backends).
 | `src/store.rs` | recents, settings, and the portal restore token |
 | `src/ipc.rs` | single-instance socket |
 | `src/emoji.rs` | the compiled-in emoji table and search |
-| `src/backend_gtk.rs`, `src/ui.rs`, `src/settings.rs` | the GTK 4 backend, kept as a fallback |
 | `build.rs` | turns `data/emoji.tsv` into static tables: the emoji, their tones, group ranges, search masks, and a lookup index |
 | `tools/update-emoji.py` | regenerates `data/emoji.tsv` from Unicode |
 | `protocols/` | vendored `input-method-unstable-v1.xml` |
@@ -90,24 +89,6 @@ appearance, ever.
 `--test-im` and `--test-paste` drive one route in isolation, print each step, and give
 you five seconds to focus a target window. Reach for these before changing timings: they
 separate "the mechanism is broken" from "the app's own sequencing is wrong".
-
-## Two backends
-
-`cargo build` gives the native client. The GTK 4 original still builds:
-
-```sh
-cargo build --release                                     # native (default)
-cargo build --release --no-default-features --features gtk # GTK 4
-```
-
-Everything outside the UI is shared: `emoji.rs`, `store.rs`, `im.rs`, `insert.rs`,
-`ipc.rs` and `commit.rs` know nothing about either toolkit. `commit::Ctx` takes a
-`quit: &dyn Fn()` rather than a `gtk::Application` for exactly this reason, and
-`ipc::bind`/`ipc::ack` are split from `ipc::serve` because the two loops pump the socket
-differently — glib can await a channel but not poll a raw fd, calloop does the opposite.
-
-Keep the GTK build compiling until it is deleted outright. It is the fallback if a KWin
-update breaks something in the layer-shell path.
 
 ## The window (`src/backend_native.rs`, `src/render.rs`)
 
@@ -356,8 +337,7 @@ mmapped, and ~9 MB is the full-output shm buffer.
 `cargo test` covers everything that does not need a compositor, which since the migration
 is most of the interesting logic: the emoji table and search ranking, plus the grid's
 geometry and navigation, the picker's state machine and settings actions, the search box's
-editing, the kdeglobals parser, and the card's layout arithmetic. 62 tests under `native`,
-15 under `gtk`.
+editing, the kdeglobals parser, and the card's layout arithmetic. 61 tests.
 
 The rest needs a real session:
 

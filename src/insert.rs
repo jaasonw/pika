@@ -9,7 +9,6 @@ use ashpd::desktop::remote_desktop::{
     DeviceType, KeyState, NotifyKeyboardKeycodeOptions, RemoteDesktop, SelectDevicesOptions,
 };
 use ashpd::desktop::PersistMode;
-use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 /// Linux evdev key codes, as the portal expects.
@@ -46,62 +45,27 @@ pub enum Reply {
     Failed(String),
 }
 
-/// Owns the portal session on its own thread. Created at startup so the D-Bus round
-/// trips and the (first-run only) permission dialog overlap with the user picking.
-pub struct PasteAgent {
-    tx: Sender<()>,
-    rx: Receiver<Reply>,
-}
-
-impl PasteAgent {
-    pub fn spawn(restore_token: Option<String>) -> Self {
-        let (req_tx, req_rx) = std::sync::mpsc::channel::<()>();
-        let (rep_tx, rep_rx) = std::sync::mpsc::channel::<Reply>();
-
-        std::thread::spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = rep_tx.send(Reply::Failed(e.to_string()));
-                    return;
-                }
-            };
-            rt.block_on(async move {
-                let session = match open_session(restore_token.as_deref()).await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        // Wait for the request so the caller gets the error at pick time,
-                        // not before the user has chosen anything.
-                        let _ = req_rx.recv();
-                        let _ = rep_tx.send(Reply::Failed(e));
-                        return;
-                    }
-                };
-                if req_rx.recv().is_err() {
-                    return;
-                }
-                tokio::time::sleep(FOCUS_SETTLE).await;
-                let reply = match paste(&session.0, &session.1).await {
-                    Ok(()) => Reply::Pasted(session.2),
-                    Err(e) => Reply::Failed(e),
-                };
-                let _ = rep_tx.send(reply);
-            });
-        });
-
-        PasteAgent { tx: req_tx, rx: rep_rx }
-    }
-
-    /// Ask for the paste and block until it lands. Call only after the window is hidden.
-    pub fn paste_now(&self, timeout: Duration) -> Reply {
-        if self.tx.send(()).is_err() {
-            return Reply::Failed("paste thread went away".into());
+/// Open a portal session and synthesize Ctrl+V into whatever holds focus. Blocks for the
+/// D-Bus round trips (and, first run only, the permission dialog) plus the paste itself,
+/// so call only after the window is hidden and there is nothing left to overlap it with.
+pub fn paste_once(restore_token: Option<String>, timeout: Duration) -> Reply {
+    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt,
+        Err(e) => return Reply::Failed(e.to_string()),
+    };
+    rt.block_on(async move {
+        let fut = async {
+            let (proxy, session, token) = open_session(restore_token.as_deref()).await?;
+            tokio::time::sleep(FOCUS_SETTLE).await;
+            paste(&proxy, &session).await?;
+            Ok(token)
+        };
+        match tokio::time::timeout(timeout, fut).await {
+            Ok(Ok(token)) => Reply::Pasted(token),
+            Ok(Err(e)) => Reply::Failed(e),
+            Err(_) => Reply::Failed("timed out".into()),
         }
-        match self.rx.recv_timeout(timeout) {
-            Ok(reply) => reply,
-            Err(e) => Reply::Failed(e.to_string()),
-        }
-    }
+    })
 }
 
 type OpenSession = (
@@ -165,8 +129,7 @@ async fn paste(
 }
 
 /// `--test-paste`: open a session, wait for you to focus a field, send Ctrl+V, report.
-/// Keeps the process alive afterwards so the session cannot be torn down mid-delivery.
-pub fn test_paste(gap_ms: u64, settle_ms: u64) {
+pub fn test_paste() {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -186,28 +149,10 @@ pub fn test_paste(gap_ms: u64, settle_ms: u64) {
         eprintln!("session up (token {token:?}); focus a text field NOW, sending in 5s");
         tokio::time::sleep(Duration::from_secs(5)).await;
 
-        for (code, state) in [
-            (KEY_LEFTCTRL, KeyState::Pressed),
-            (KEY_V, KeyState::Pressed),
-            (KEY_V, KeyState::Released),
-            (KEY_LEFTCTRL, KeyState::Released),
-        ] {
-            match proxy
-                .notify_keyboard_keycode(
-                    &session,
-                    code,
-                    state,
-                    NotifyKeyboardKeycodeOptions::default(),
-                )
-                .await
-            {
-                Ok(()) => eprintln!("sent {code} {state:?}"),
-                Err(e) => eprintln!("send {code} failed: {e}"),
-            }
-            tokio::time::sleep(Duration::from_millis(gap_ms)).await;
+        match paste(&proxy, &session).await {
+            Ok(()) => eprintln!("sent"),
+            Err(e) => eprintln!("send failed: {e}"),
         }
-        eprintln!("done; holding session {settle_ms}ms");
-        tokio::time::sleep(Duration::from_millis(settle_ms)).await;
     });
 }
 

@@ -1,32 +1,15 @@
+mod backend_native;
 mod commit;
 mod emoji;
+mod grid;
 mod im;
 mod insert;
 mod ipc;
-mod store;
-
-#[cfg(feature = "gtk")]
-mod backend_gtk;
-#[cfg(feature = "gtk")]
-mod settings;
-#[cfg(feature = "gtk")]
-mod ui;
-
-#[cfg(feature = "native")]
-mod backend_native;
-#[cfg(feature = "native")]
-mod grid;
-#[cfg(feature = "native")]
 mod picker;
-#[cfg(feature = "native")]
 mod query;
-#[cfg(feature = "native")]
 mod render;
-#[cfg(feature = "native")]
+mod store;
 mod theme;
-
-#[cfg(not(any(feature = "gtk", feature = "native")))]
-compile_error!("enable exactly one UI backend: --features gtk (default) or --features native");
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -37,7 +20,6 @@ emoji-picker - grid emoji picker for KDE Wayland
 usage: emoji-picker [options]
 
   (no options)   show the picker once, insert the choice, exit
-  --daemon       stay resident (GTK build only; the native backend runs once)
   --no-insert    copy to the clipboard only, never insert into the focused field
   --copy         also put the emoji on the clipboard when it was inserted directly
   --print        write the chosen emoji to stdout as well
@@ -48,10 +30,9 @@ usage: emoji-picker [options]
   -h, --help     this text
 ";
 
-/// Runtime flags, parsed once and handed to whichever UI backend is compiled in.
+/// Runtime flags, parsed once and handed to the backend.
 #[derive(Clone, Copy)]
 pub struct Flags {
-    pub daemon: bool,
     pub no_paste: bool,
     pub always_copy: bool,
     pub print: bool,
@@ -79,7 +60,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if has("--test-paste") {
-        insert::test_paste(20, 500);
+        insert::test_paste();
         return ExitCode::SUCCESS;
     }
     if has("--bench") {
@@ -88,7 +69,6 @@ fn main() -> ExitCode {
     }
 
     let flags = Flags {
-        daemon: has("--daemon"),
         no_paste: has("--no-insert") || has("--no-paste"),
         always_copy: has("--copy"),
         print: has("--print"),
@@ -100,19 +80,12 @@ fn main() -> ExitCode {
 
     // Another instance already owns the window: tell it to toggle and get out of the
     // way, so a second hotkey press closes the picker rather than opening a second one.
-    if !flags.daemon && ipc::request_toggle() {
+    if ipc::request_toggle() {
         return ExitCode::SUCCESS;
     }
 
-    // While both backends are compiled in, the native one wins - it is the one being
-    // brought up, and building with both is how the two get compared.
-    #[cfg(feature = "native")]
     let code = backend_native::run(flags);
-    #[cfg(all(feature = "gtk", not(feature = "native")))]
-    let code = backend_gtk::run(flags);
 
-    // We owned the socket in either mode; leaving it behind would make the next
-    // invocation think an instance is still up.
     ipc::cleanup();
     code
 }

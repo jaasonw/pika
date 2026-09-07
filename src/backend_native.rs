@@ -1,9 +1,9 @@
 //! The native Wayland backend: smithay-client-toolkit + cairo + pangocairo, no GTK.
 //!
 //! The layer-shell surface, event loop, and the keyboard and pointer routing that drives
-//! `Picker`. A committed choice is inserted through the shared `commit` module, the same
-//! two routes the GTK build uses. Settings are a second mode on the same card rather than
-//! a second surface; see plans/wayland-native-migration.md.
+//! `Picker`. A committed choice is inserted through the shared `commit` module. Settings
+//! are a second mode on the same card rather than a second surface; see
+//! plans/wayland-native-migration.md.
 
 use crate::commit;
 use crate::ipc;
@@ -77,12 +77,6 @@ fn clipboard_text() -> Option<String> {
 const FALLBACK: (u32, u32) = (1920, 1080);
 
 pub fn run(flags: Flags) -> ExitCode {
-    if flags.daemon {
-        // Better to say so than to accept the flag and behave as a one-shot. Staying
-        // resident bought startup time that this backend no longer spends, so the mode is
-        // on hold rather than pending; see the plan.
-        eprintln!("emoji-picker: --daemon is not implemented on the native backend, running once");
-    }
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(e) => {
@@ -124,8 +118,8 @@ pub fn run(flags: Flags) -> ExitCode {
     let surface = compositor.create_surface(&qh);
     let layer =
         layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("emoji-picker"), None);
-    // Anchored to every edge, so the surface spans the output: a click landing outside the
-    // card still reaches us and dismisses, the way the GTK build behaves.
+    // Anchored to every edge, so the surface spans the output and a click landing outside
+    // the card still reaches us and dismisses.
     layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
     // Exclusive so a hotkey-driven picker gets the keystrokes without a click first.
     layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
@@ -237,10 +231,9 @@ pub fn run(flags: Flags) -> ExitCode {
     surface.commit();
     let _ = conn.roundtrip();
     // The roundtrip only proves the compositor saw the unmap, not that it has moved focus
-    // on and told the new client. This is the same wait the GTK path takes after hiding.
+    // on and told the new client.
     std::thread::sleep(commit::HIDE_SETTLE);
 
-    let agent = Rc::new(RefCell::new(None));
     let (want_insert, want_copy) = {
         let st = store.borrow();
         (st.settings().insert, st.settings().always_copy)
@@ -248,11 +241,6 @@ pub fn run(flags: Flags) -> ExitCode {
     commit::finish(commit::Ctx {
         ch,
         st: &store,
-        agent: &agent,
-        // Nothing to quit: the event loop has already ended and this is the last work in
-        // the process. Daemon mode is not wired up on this backend yet.
-        quit: &|| {},
-        daemon: false,
         // Flags win for a single run; otherwise the saved settings do.
         no_paste: flags.no_paste || !want_insert,
         always_copy: flags.always_copy || want_copy,
@@ -412,7 +400,7 @@ impl App {
     }
 
     /// Key handling for the settings mode. Escape and the Back row return to the picker;
-    /// everything else edits a setting and saves it, the way the GTK window did.
+    /// everything else edits a setting and saves it.
     fn settings_key(&mut self, key: Keysym) {
         let (tone, limit) = {
             let st = self.store.borrow();
@@ -461,8 +449,7 @@ impl App {
                 }
                 Action::Close => {}
             }
-            // Settings save on change, as they did in the GTK window: there is no OK
-            // button to hang the write off.
+            // Settings save on change; there is no OK button to hang the write off.
             st.save();
         }
         if action == Action::Close {
@@ -597,9 +584,8 @@ impl KeyboardHandler for App {
                 self.exit = true;
                 return;
             }
-            // Text editing. Plain arrows stay with the grid - this is a picker first, and
-            // the GTK build routed them the same way - so the text cursor is reached with
-            // Ctrl+arrows, Home and End.
+            // Text editing. Plain arrows stay with the grid - this is a picker first - so
+            // the text cursor is reached with Ctrl+arrows, Home and End.
             Keysym::BackSpace if ctrl => self.ui.edit(|q| q.delete_word_back()),
             Keysym::BackSpace => self.ui.edit(|q| q.backspace()),
             Keysym::Delete if ctrl => self.ui.edit(|q| q.delete_word_forward()),
@@ -628,8 +614,7 @@ impl KeyboardHandler for App {
             Keysym::Page_Down => self.ui.page(true),
             Keysym::Tab => self.ui.cycle_section(false),
             Keysym::ISO_Left_Tab => self.ui.cycle_section(true),
-            // Ctrl+U clears the query, Ctrl+W drops a word - the line editing a
-            // GtkSearchEntry gave us for free.
+            // Ctrl+U clears the query, Ctrl+W drops a word.
             Keysym::u if ctrl => self.ui.edit(|q| q.clear()),
             Keysym::w if ctrl => self.ui.edit(|q| q.delete_word_back()),
             Keysym::v if ctrl => {

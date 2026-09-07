@@ -60,9 +60,6 @@ struct State {
     context: Option<ZwpInputMethodContextV1>,
     /// Latest serial the compositor sent for this context; commits must quote it.
     serial: u32,
-    committed: bool,
-    /// The compositor never offered the interface at all.
-    unavailable: bool,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for State {
@@ -141,7 +138,6 @@ pub fn commit(text: &str, wait: Duration) -> Result<(), Error> {
     let mut state = State::default();
     queue.roundtrip(&mut state).map_err(|e| unusable(&e))?;
     if state.method.is_none() {
-        state.unavailable = true;
         return Err(Error::Unusable(
             "compositor does not offer zwp_input_method_v1".into(),
         ));
@@ -194,7 +190,6 @@ pub fn commit(text: &str, wait: Duration) -> Result<(), Error> {
 
     let context = state.context.clone().unwrap();
     context.commit_string(state.serial, text.to_string());
-    state.committed = true;
     conn.flush().map_err(|e| unusable(&e))?;
     queue.roundtrip(&mut state).map_err(|e| unusable(&e))?;
     Ok(())
