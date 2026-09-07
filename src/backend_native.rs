@@ -349,9 +349,7 @@ impl App {
             }
             Keysym::Left => self.ui.adjust_setting(-1, tone, limit),
             Keysym::Right => self.ui.adjust_setting(1, tone, limit),
-            Keysym::Return | Keysym::KP_Enter | Keysym::space => {
-                self.ui.activate_setting(tone)
-            }
+            Keysym::Return | Keysym::KP_Enter | Keysym::space => self.ui.activate_setting(),
             _ => None,
         };
         let Some(action) = action else { return };
@@ -624,10 +622,17 @@ impl PointerHandler for App {
                         return;
                     }
                     if self.ui.mode == Mode::Settings {
+                        // A tone swatch is a target in its own right, so check it before
+                        // falling back to "which row was clicked".
+                        if let Some(tone) = render::tone_at(px - cx, py - cy) {
+                            self.ui.setting = render::tone_row();
+                            self.apply(Action::SetTone(tone));
+                            dirty = true;
+                            continue;
+                        }
                         if let Some(i) = render::setting_at(px - cx, py - cy) {
                             self.ui.setting = i;
-                            let tone = self.store.borrow().settings().skin_tone;
-                            if let Some(action) = self.ui.activate_setting(tone) {
+                            if let Some(action) = self.ui.activate_setting() {
                                 self.apply(action);
                             }
                             dirty = true;

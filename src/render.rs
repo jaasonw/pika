@@ -22,6 +22,9 @@ const GAP: f64 = 8.0;
 const GEAR_W: f64 = 28.0;
 /// Height of one settings row, including the gap under it.
 const SETTING_ROW_H: f64 = 40.0;
+/// One skin-tone swatch in the tone row.
+const TONE_SWATCH: f64 = 34.0;
+const TONE_COUNT: usize = 6;
 
 /// The card is exactly as wide as twelve cells plus its padding, so the grid never has a
 /// ragged right edge.
@@ -142,7 +145,7 @@ fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settin
 
     let w = CARD_W - PAD * 2.0;
     for (i, row) in picker::SETTINGS.iter().enumerate() {
-        let y = TABS_Y + 8.0 + i as f64 * SETTING_ROW_H;
+        let y = setting_y(i);
         if i == p.setting {
             rounded_rect(cr, PAD, y, w, SETTING_ROW_H - 4.0, CELL_RADIUS);
             set_source(cr, theme.selection_bg);
@@ -161,7 +164,9 @@ fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settin
         cr.move_to(PAD + 10.0, y + (SETTING_ROW_H - 4.0 - th as f64) / 2.0);
         pangocairo::functions::show_layout(cr, &layout);
 
-        if let Some(value) = value {
+        if *row == Setting::Tone {
+            tone_strip(cr, theme, fonts, y, set.skin_tone, i == p.setting);
+        } else if let Some(value) = value {
             // Values are right-aligned against the card edge, the way a settings list
             // usually reads.
             let layout = layout_for(cr, &fonts.ui, &value);
@@ -178,11 +183,42 @@ fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settin
     let layout = layout_for(
         cr,
         &fonts.small,
-        "Arrows move and change  \u{2022}  Enter toggles  \u{2022}  Esc goes back",
+        "Arrows move and change  \u{2022}  Enter activates  \u{2022}  Esc goes back",
     );
     let (_, th) = layout.pixel_size();
     cr.move_to(PAD + 4.0, FOOTER_Y + (FOOTER_H - th as f64) / 2.0);
     pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// The six tones as a row of swatches, so the choice is one click rather than a cycle.
+///
+/// When the row has keyboard focus its background is already the selection colour, so the
+/// chosen tone is marked with an outline instead of a fill it would disappear into.
+fn tone_strip(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, tone: u8, focused: bool) {
+    let x0 = tone_strip_x();
+    for i in 0..TONE_COUNT {
+        let x = x0 + i as f64 * TONE_SWATCH;
+        let box_y = y + (SETTING_ROW_H - 4.0 - TONE_SWATCH) / 2.0;
+        if i as u8 == tone {
+            rounded_rect(cr, x + 1.0, box_y, TONE_SWATCH - 2.0, TONE_SWATCH, CELL_RADIUS);
+            if focused {
+                set_source(cr, theme.selection_fg);
+                cr.set_line_width(2.0);
+                cr.stroke().unwrap();
+            } else {
+                set_source(cr, theme.selection_bg);
+                cr.fill().unwrap();
+            }
+        }
+        let hand = emoji::with_tone("\u{270b}", i as u8);
+        let layout = layout_for(cr, &fonts.tab, hand);
+        let (tw, th) = layout.pixel_size();
+        cr.move_to(
+            x + (TONE_SWATCH - tw as f64) / 2.0,
+            box_y + (TONE_SWATCH - th as f64) / 2.0,
+        );
+        pangocairo::functions::show_layout(cr, &layout);
+    }
 }
 
 /// A settings row's label and, where it has one, its current value.
@@ -191,15 +227,8 @@ fn setting_text(row: Setting, p: &Picker, set: &Settings) -> (&'static str, Opti
     match row {
         Setting::Insert => ("Insert into the focused field", onoff(set.insert)),
         Setting::AlwaysCopy => ("Always copy as well", onoff(set.always_copy)),
-        Setting::Tone => (
-            "Skin tone",
-            // The sample hand shows what the choice does, as the GTK buttons did.
-            Some(format!(
-                "{}  {}",
-                emoji::with_tone("\u{270b}", set.skin_tone),
-                tone_name(set.skin_tone)
-            )),
-        ),
+        // Drawn as a row of swatches by `tone_strip`, not as text.
+        Setting::Tone => ("Skin tone", None),
         Setting::RecentLimit => ("Recents to remember", Some(set.recent_limit.to_string())),
         Setting::ClearRecents => (
             "Clear recents",
@@ -211,17 +240,6 @@ fn setting_text(row: Setting, p: &Picker, set: &Settings) -> (&'static str, Opti
                 .then(|| "KDE will ask again".to_string()),
         ),
         Setting::Back => ("Back to the picker", None),
-    }
-}
-
-fn tone_name(tone: u8) -> &'static str {
-    match tone {
-        1 => "Light",
-        2 => "Medium light",
-        3 => "Medium",
-        4 => "Medium dark",
-        5 => "Dark",
-        _ => "Default",
     }
 }
 
@@ -407,6 +425,39 @@ fn footer(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker) {
     pangocairo::functions::show_layout(cr, &layout);
 }
 
+/// Top of a settings row, relative to the card.
+fn setting_y(i: usize) -> f64 {
+    TABS_Y + 8.0 + i as f64 * SETTING_ROW_H
+}
+
+/// Left edge of the tone swatches. They sit right-aligned in their row, where the other
+/// rows put their value.
+fn tone_strip_x() -> f64 {
+    CARD_W - PAD - 8.0 - TONE_SWATCH * TONE_COUNT as f64
+}
+
+/// Index of the tone row in `SETTINGS`, so the backend can focus it on a swatch click.
+pub fn tone_row() -> usize {
+    picker::SETTINGS
+        .iter()
+        .position(|s| *s == Setting::Tone)
+        .expect("the tone row is in SETTINGS")
+}
+
+/// Which tone swatch a card-relative point falls on, if any.
+pub fn tone_at(x: f64, y: f64) -> Option<u8> {
+    let top = setting_y(tone_row());
+    if y < top || y >= top + SETTING_ROW_H - 4.0 {
+        return None;
+    }
+    let rel = x - tone_strip_x();
+    if rel < 0.0 {
+        return None;
+    }
+    let i = (rel / TONE_SWATCH) as usize;
+    (i < TONE_COUNT).then_some(i as u8)
+}
+
 /// Whether a card-relative point falls on the gear.
 pub fn gear_hit(x: f64, y: f64) -> bool {
     x >= CARD_W - PAD - GEAR_W && x < CARD_W - PAD && y >= SEARCH_Y && y < SEARCH_Y + SEARCH_H
@@ -417,7 +468,7 @@ pub fn setting_at(x: f64, y: f64) -> Option<usize> {
     if x < PAD || x >= CARD_W - PAD {
         return None;
     }
-    let rel = y - (TABS_Y + 8.0);
+    let rel = y - setting_y(0);
     if rel < 0.0 {
         return None;
     }

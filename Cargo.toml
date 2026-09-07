@@ -12,12 +12,12 @@ codegen-units = 1
 panic = "abort"
 strip = true
 
-# Two UI backends live side by side during the migration off GTK (see
-# plans/wayland-native-migration.md). `gtk` is still the default so master keeps building a
-# working picker; `native` is the smithay-client-toolkit + cairo replacement being brought up
-# under it. Everything outside src/ui*.rs and src/settings*.rs is shared by both.
+# Two UI backends. `native` is the default: smithay-client-toolkit drawing through cairo,
+# with no toolkit above it. `gtk` is the original GTK 4 implementation, kept buildable as a
+# reference and a fallback. Everything outside src/ui.rs, src/settings.rs, src/render.rs,
+# src/grid.rs, src/picker.rs and the two backend modules is shared by both.
 [features]
-default = ["gtk"]
+default = ["native"]
 gtk = ["dep:gtk4", "dep:gtk4-layer-shell"]
 native = [
     "dep:smithay-client-toolkit",

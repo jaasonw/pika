@@ -136,14 +136,13 @@ impl Picker {
     }
 
     /// Enter or Space on the selected row.
-    pub fn activate_setting(&self, tone: u8) -> Option<Action> {
+    pub fn activate_setting(&self) -> Option<Action> {
         match SETTINGS[self.setting] {
             Setting::Insert => Some(Action::ToggleInsert),
             Setting::AlwaysCopy => Some(Action::ToggleAlwaysCopy),
-            // Activating the tone row cycles it, so the keyboard needs no arrow keys and a
-            // click on the row does something sensible too.
-            Setting::Tone => Some(Action::SetTone((tone + 1) % 6)),
-            Setting::RecentLimit => None,
+            // Both value rows are driven by Left/Right and, for the tones, by clicking
+            // the swatch directly. Enter has nothing left to mean on either.
+            Setting::Tone | Setting::RecentLimit => None,
             Setting::ClearRecents => Some(Action::ClearRecents),
             Setting::ResetPaste => Some(Action::ResetPaste),
             Setting::Back => Some(Action::Close),
@@ -412,12 +411,12 @@ mod tests {
     }
 
     #[test]
-    fn the_tone_row_cycles_through_all_six() {
+    fn the_tone_row_wraps_in_both_directions() {
         let mut p = Picker::new(vec![], 0);
         p.open_settings();
         p.setting = SETTINGS.iter().position(|s| *s == Setting::Tone).unwrap();
-        assert_eq!(p.activate_setting(0), Some(Action::SetTone(1)));
-        assert_eq!(p.activate_setting(5), Some(Action::SetTone(0)));
+        // Enter does nothing; the row is driven by the arrows and by clicking a swatch.
+        assert_eq!(p.activate_setting(), None);
         assert_eq!(p.adjust_setting(-1, 0, 12), Some(Action::SetTone(5)));
         assert_eq!(p.adjust_setting(1, 5, 12), Some(Action::SetTone(0)));
     }
