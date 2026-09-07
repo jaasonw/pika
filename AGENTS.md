@@ -137,6 +137,11 @@ update breaks something in the layer-shell path.
   stops at the bottom of the viewport.
 - **`Fonts` is built once per frame, not once per cell.** Parsing
   `FontDescription::from_string` for each of ~100 cells dominated a redraw.
+- **The client draws its own cursor.** A plain `wl_pointer` never sets one, so the image
+  stays whatever the previously focused surface left behind. `ThemedPointer` plus
+  `set_cursor` fixes it; the request needs the latest enter serial, so the first image can
+  only be asked for from the `Enter` event, and it is only re-sent when the icon actually
+  changes — motion arrives far faster than the cursor needs updating.
 - **Alpha overlays are pre-blended.** `Rgb::blend` composites the tints the GTK stylesheet
   wrote as `alpha(@theme_fg_color, 0.10)` against the known card background, so hover and
   border tints cost no Cairo group.
@@ -169,6 +174,14 @@ not been built.
 A **second mode on the same card**, not a second surface. The GTK build had no choice: only
 one surface can hold the keyboard grab, so it hid the picker, showed a second layer surface,
 and re-presented the picker on close. Flipping `Picker::mode` removes that entirely.
+
+Rows carry real controls — a switch, a stepper, a strip of swatches — rather than a word
+naming the value. "On"/"Off" text states what a setting is but not that it can be changed,
+and the recents cap had no mouse affordance at all before the stepper.
+
+A focused row is marked with a bar down its left edge rather than a flooded background, so
+every control keeps one background colour to sit on; pointer hover is a separate, fainter
+tint, since the keyboard and the mouse each need their own position.
 
 `Picker` cannot reach the store, so a row names a `picker::Action` and
 `App::apply` performs it. That keeps every store mutation in one function and leaves the

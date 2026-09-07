@@ -25,6 +25,19 @@ const SETTING_ROW_H: f64 = 40.0;
 /// One skin-tone swatch in the tone row.
 const TONE_SWATCH: f64 = 34.0;
 const TONE_COUNT: usize = 6;
+/// The toggle switch: track, and the knob inset inside it.
+const SWITCH_W: f64 = 42.0;
+const SWITCH_H: f64 = 22.0;
+const SWITCH_PAD: f64 = 3.0;
+/// A stepper button either side of the recents number, and the gap they leave for it.
+const STEP_W: f64 = 26.0;
+const STEP_VALUE_W: f64 = 40.0;
+/// Right edge every row's control is aligned against.
+const CONTROL_R: f64 = CARD_W - PAD - 10.0;
+/// A focused row gets a bar down its left edge rather than a flooded background.
+const FOCUS_BAR_W: f64 = 3.0;
+const ROW_FOCUS_ALPHA: f64 = 0.10;
+const ROW_HOVER_ALPHA: f64 = 0.09;
 
 /// The card is exactly as wide as twelve cells plus its padding, so the grid never has a
 /// ragged right edge.
@@ -144,38 +157,43 @@ fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settin
     pangocairo::functions::show_layout(cr, &layout);
 
     let w = CARD_W - PAD * 2.0;
+    let h = SETTING_ROW_H - 4.0;
     for (i, row) in picker::SETTINGS.iter().enumerate() {
         let y = setting_y(i);
-        if i == p.setting {
-            rounded_rect(cr, PAD, y, w, SETTING_ROW_H - 4.0, CELL_RADIUS);
+        let focused = i == p.setting;
+        let hovered = p.hover_setting == Some(i);
+
+        if focused || hovered {
+            let alpha = if focused { ROW_FOCUS_ALPHA } else { ROW_HOVER_ALPHA };
+            rounded_rect(cr, PAD, y, w, h, CELL_RADIUS);
+            set_source(cr, theme.window_fg.blend(theme.window_bg, alpha));
+            cr.fill().unwrap();
+        }
+        if focused {
+            // The keyboard's position, kept distinct from the pointer's. A bar rather than
+            // a flooded row, so every control below keeps one background to sit on.
+            rounded_rect(cr, PAD, y + 4.0, FOCUS_BAR_W, h - 8.0, FOCUS_BAR_W / 2.0);
             set_source(cr, theme.selection_bg);
             cr.fill().unwrap();
         }
-        let fg = if i == p.setting {
-            theme.selection_fg
-        } else {
-            theme.window_fg
-        };
-        let (label, value) = setting_text(*row, p, set);
 
-        set_source(cr, fg);
-        let layout = layout_for(cr, &fonts.ui, label);
+        set_source(cr, theme.window_fg);
+        let layout = layout_for(cr, &fonts.ui, label_for(*row));
         let (_, th) = layout.pixel_size();
-        cr.move_to(PAD + 10.0, y + (SETTING_ROW_H - 4.0 - th as f64) / 2.0);
+        cr.move_to(PAD + 12.0, y + (h - th as f64) / 2.0);
         pangocairo::functions::show_layout(cr, &layout);
 
-        if *row == Setting::Tone {
-            tone_strip(cr, theme, fonts, y, set.skin_tone, i == p.setting);
-        } else if let Some(value) = value {
-            // Values are right-aligned against the card edge, the way a settings list
-            // usually reads.
-            let layout = layout_for(cr, &fonts.ui, &value);
-            let (vw, vh) = layout.pixel_size();
-            cr.move_to(
-                CARD_W - PAD - 10.0 - vw as f64,
-                y + (SETTING_ROW_H - 4.0 - vh as f64) / 2.0,
-            );
-            pangocairo::functions::show_layout(cr, &layout);
+        match row {
+            Setting::Insert => switch(cr, theme, y, h, set.insert),
+            Setting::AlwaysCopy => switch(cr, theme, y, h, set.always_copy),
+            Setting::Tone => tone_strip(cr, theme, fonts, y, h, set.skin_tone),
+            Setting::RecentLimit => stepper(cr, theme, fonts, y, h, set.recent_limit),
+            // The action rows say what they did, once they have done it.
+            Setting::ClearRecents if p.cleared_recents => note(cr, theme, fonts, y, h, "Cleared"),
+            Setting::ResetPaste if p.reset_paste => {
+                note(cr, theme, fonts, y, h, "KDE will ask again")
+            }
+            _ => {}
         }
     }
 
@@ -183,35 +201,92 @@ fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settin
     let layout = layout_for(
         cr,
         &fonts.small,
-        "Arrows move and change  \u{2022}  Enter activates  \u{2022}  Esc goes back",
+        "Click or use the arrows  \u{2022}  Enter activates  \u{2022}  Esc goes back",
     );
     let (_, th) = layout.pixel_size();
     cr.move_to(PAD + 4.0, FOOTER_Y + (FOOTER_H - th as f64) / 2.0);
     pangocairo::functions::show_layout(cr, &layout);
 }
 
+/// A toggle switch: a filled track with the knob at the end matching its state. The two
+/// boolean rows used to read "On"/"Off", which says the value but not that it is a control.
+fn switch(cr: &Context, theme: &Theme, y: f64, row_h: f64, on: bool) {
+    let x = switch_x();
+    let top = y + (row_h - SWITCH_H) / 2.0;
+    rounded_rect(cr, x, top, SWITCH_W, SWITCH_H, SWITCH_H / 2.0);
+    if on {
+        set_source(cr, theme.selection_bg);
+    } else {
+        // Off still needs a visible track, or it reads as empty space.
+        set_source(cr, theme.window_fg.blend(theme.window_bg, 0.22));
+    }
+    cr.fill().unwrap();
+
+    let knob = SWITCH_H - SWITCH_PAD * 2.0;
+    let knob_x = if on {
+        x + SWITCH_W - SWITCH_PAD - knob
+    } else {
+        x + SWITCH_PAD
+    };
+    rounded_rect(cr, knob_x, top + SWITCH_PAD, knob, knob, knob / 2.0);
+    set_source(cr, if on { theme.selection_fg } else { theme.window_bg });
+    cr.fill().unwrap();
+}
+
+/// The recents cap, with a button either side. Without these the row could only be changed
+/// from the keyboard, which left the mouse nothing to do on it at all.
+fn stepper(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, row_h: f64, value: usize) {
+    let x0 = stepper_x();
+    let top = y + (row_h - SWITCH_H) / 2.0;
+    let track = theme.window_fg.blend(theme.window_bg, 0.14);
+
+    for (i, glyph) in ["\u{2212}", "+"].iter().enumerate() {
+        let x = x0 + i as f64 * (STEP_W + STEP_VALUE_W);
+        rounded_rect(cr, x, top, STEP_W, SWITCH_H, CELL_RADIUS);
+        set_source(cr, track);
+        cr.fill().unwrap();
+
+        set_source(cr, theme.window_fg);
+        let layout = layout_for(cr, &fonts.ui, glyph);
+        let (tw, th) = layout.pixel_size();
+        cr.move_to(
+            x + (STEP_W - tw as f64) / 2.0,
+            top + (SWITCH_H - th as f64) / 2.0,
+        );
+        pangocairo::functions::show_layout(cr, &layout);
+    }
+
+    set_source(cr, theme.window_fg);
+    let layout = layout_for(cr, &fonts.ui, &value.to_string());
+    let (tw, th) = layout.pixel_size();
+    cr.move_to(
+        x0 + STEP_W + (STEP_VALUE_W - tw as f64) / 2.0,
+        y + (row_h - th as f64) / 2.0,
+    );
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
+/// A dimmed word at the right of a row, for an action reporting what it did.
+fn note(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, row_h: f64, text: &str) {
+    set_source(cr, theme.window_fg.blend(theme.window_bg, FOOTER_ALPHA));
+    let layout = layout_for(cr, &fonts.small, text);
+    let (tw, th) = layout.pixel_size();
+    cr.move_to(CONTROL_R - tw as f64, y + (row_h - th as f64) / 2.0);
+    pangocairo::functions::show_layout(cr, &layout);
+}
+
 /// The six tones as a row of swatches, so the choice is one click rather than a cycle.
-///
-/// When the row has keyboard focus its background is already the selection colour, so the
-/// chosen tone is marked with an outline instead of a fill it would disappear into.
-fn tone_strip(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, tone: u8, focused: bool) {
+fn tone_strip(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, row_h: f64, tone: u8) {
     let x0 = tone_strip_x();
     for i in 0..TONE_COUNT {
         let x = x0 + i as f64 * TONE_SWATCH;
-        let box_y = y + (SETTING_ROW_H - 4.0 - TONE_SWATCH) / 2.0;
+        let box_y = y + (row_h - TONE_SWATCH) / 2.0;
         if i as u8 == tone {
             rounded_rect(cr, x + 1.0, box_y, TONE_SWATCH - 2.0, TONE_SWATCH, CELL_RADIUS);
-            if focused {
-                set_source(cr, theme.selection_fg);
-                cr.set_line_width(2.0);
-                cr.stroke().unwrap();
-            } else {
-                set_source(cr, theme.selection_bg);
-                cr.fill().unwrap();
-            }
+            set_source(cr, theme.selection_bg);
+            cr.fill().unwrap();
         }
-        let hand = emoji::with_tone("\u{270b}", i as u8);
-        let layout = layout_for(cr, &fonts.tab, hand);
+        let layout = layout_for(cr, &fonts.tab, emoji::with_tone("\u{270b}", i as u8));
         let (tw, th) = layout.pixel_size();
         cr.move_to(
             x + (TONE_SWATCH - tw as f64) / 2.0,
@@ -221,28 +296,17 @@ fn tone_strip(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, tone: u8, focu
     }
 }
 
-/// A settings row's label and, where it has one, its current value.
-fn setting_text(row: Setting, p: &Picker, set: &Settings) -> (&'static str, Option<String>) {
-    let onoff = |b: bool| Some((if b { "On" } else { "Off" }).to_string());
+fn label_for(row: Setting) -> &'static str {
     match row {
-        Setting::Insert => ("Insert into the focused field", onoff(set.insert)),
-        Setting::AlwaysCopy => ("Always copy as well", onoff(set.always_copy)),
-        // Drawn as a row of swatches by `tone_strip`, not as text.
-        Setting::Tone => ("Skin tone", None),
-        Setting::RecentLimit => ("Recents to remember", Some(set.recent_limit.to_string())),
-        Setting::ClearRecents => (
-            "Clear recents",
-            p.cleared_recents.then(|| "Cleared".to_string()),
-        ),
-        Setting::ResetPaste => (
-            "Reset paste permission",
-            p.reset_paste
-                .then(|| "KDE will ask again".to_string()),
-        ),
-        Setting::Back => ("Back to the picker", None),
+        Setting::Insert => "Insert into the focused field",
+        Setting::AlwaysCopy => "Always copy as well",
+        Setting::Tone => "Skin tone",
+        Setting::RecentLimit => "Recents to remember",
+        Setting::ClearRecents => "Clear recents",
+        Setting::ResetPaste => "Reset paste permission",
+        Setting::Back => "Back to the picker",
     }
 }
-
 /// The card itself: filled rounded rectangle with a hairline border.
 fn card(cr: &Context, theme: &Theme) {
     rounded_rect(cr, 0.0, 0.0, CARD_W, CARD_H, CARD_RADIUS);
@@ -433,7 +497,51 @@ fn setting_y(i: usize) -> f64 {
 /// Left edge of the tone swatches. They sit right-aligned in their row, where the other
 /// rows put their value.
 fn tone_strip_x() -> f64 {
-    CARD_W - PAD - 8.0 - TONE_SWATCH * TONE_COUNT as f64
+    CONTROL_R - TONE_SWATCH * TONE_COUNT as f64
+}
+
+fn switch_x() -> f64 {
+    CONTROL_R - SWITCH_W
+}
+
+fn stepper_x() -> f64 {
+    CONTROL_R - STEP_W * 2.0 - STEP_VALUE_W
+}
+
+/// Which stepper button a card-relative point falls on: -1 for minus, 1 for plus.
+pub fn stepper_at(x: f64, y: f64) -> Option<i32> {
+    let i = picker::SETTINGS
+        .iter()
+        .position(|s| *s == Setting::RecentLimit)
+        .expect("the recents row is in SETTINGS");
+    let top = setting_y(i);
+    if y < top || y >= top + SETTING_ROW_H - 4.0 {
+        return None;
+    }
+    let x0 = stepper_x();
+    if x >= x0 && x < x0 + STEP_W {
+        return Some(-1);
+    }
+    let plus = x0 + STEP_W + STEP_VALUE_W;
+    if x >= plus && x < plus + STEP_W {
+        return Some(1);
+    }
+    None
+}
+
+/// Which category tab a card-relative point falls on. `count` is `Grid::sections.len()`,
+/// since the bar always draws one slot per section.
+pub fn tab_at(x: f64, y: f64, count: usize) -> Option<usize> {
+    if count == 0 || y < TABS_Y || y >= TABS_Y + TABS_H {
+        return None;
+    }
+    let slot = (CARD_W - PAD * 2.0) / count as f64;
+    let rel = x - PAD;
+    if rel < 0.0 {
+        return None;
+    }
+    let i = (rel / slot) as usize;
+    (i < count).then_some(i)
 }
 
 /// Index of the tone row in `SETTINGS`, so the backend can focus it on a swatch click.

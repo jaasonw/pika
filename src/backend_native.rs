@@ -20,7 +20,9 @@ use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
-use smithay_client_toolkit::seat::pointer::{PointerEvent, PointerEventKind, PointerHandler};
+use smithay_client_toolkit::seat::pointer::{
+    CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+};
 use smithay_client_toolkit::seat::{Capability, SeatHandler, SeatState};
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -122,6 +124,8 @@ pub fn run(flags: Flags) -> ExitCode {
         layer,
         keyboard: None,
         pointer: None,
+        compositor,
+        cursor: CursorIcon::Default,
         width: FALLBACK.0,
         height: FALLBACK.1,
         scale: 1,
@@ -182,7 +186,7 @@ pub fn run(flags: Flags) -> ExitCode {
         k.release();
     }
     if let Some(p) = app.pointer.take() {
-        p.release();
+        p.pointer().release();
     }
 
     let Some(ch) = app.picked.take() else {
@@ -231,7 +235,11 @@ struct App {
     pool: SlotPool,
     layer: LayerSurface,
     keyboard: Option<wl_keyboard::WlKeyboard>,
-    pointer: Option<wl_pointer::WlPointer>,
+    pointer: Option<ThemedPointer>,
+    /// Kept so the pointer can be given a cursor surface when a seat appears.
+    compositor: CompositorState,
+    /// Last cursor asked for, so an unchanged one is not re-sent on every motion event.
+    cursor: CursorIcon,
     width: u32,
     height: u32,
     /// Integer output scale. Fractional scaling is Phase 3 follow-up work.
@@ -330,6 +338,44 @@ impl App {
 }
 
 impl App {
+    /// Which cursor belongs over a surface-relative point. Anything that responds to a
+    /// click gets the hand; everywhere else, including outside the card, gets the arrow.
+    fn cursor_for(&self, px: f64, py: f64) -> CursorIcon {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let (cx, cy) = render::card_origin(w, h);
+        let (x, y) = (px - cx, py - cy);
+        if x < 0.0 || y < 0.0 || x >= render::CARD_W || y >= render::CARD_H {
+            return CursorIcon::Default;
+        }
+        let over = match self.ui.mode {
+            Mode::Settings => {
+                render::tone_at(x, y).is_some()
+                    || render::stepper_at(x, y).is_some()
+                    || render::setting_at(x, y).is_some()
+            }
+            Mode::Browse => {
+                let (vx, vy) = render::viewport_origin(w, h);
+                render::gear_hit(x, y)
+                    || render::tab_at(x, y, self.ui.grid.sections.len())
+                        .is_some_and(|i| self.ui.grid.sections[i].is_some())
+                    || self.ui.cell_at(px - vx, py - vy).is_some()
+            }
+        };
+        if over { CursorIcon::Pointer } else { CursorIcon::Default }
+    }
+
+    /// Ask for a cursor, skipping the request when it has not changed - motion events
+    /// arrive far faster than the image needs to.
+    fn set_cursor(&mut self, conn: &Connection, icon: CursorIcon) {
+        if self.cursor == icon {
+            return;
+        }
+        self.cursor = icon;
+        if let Some(p) = self.pointer.as_ref() {
+            let _ = p.set_cursor(conn, icon);
+        }
+    }
+
     /// Key handling for the settings mode. Escape and the Back row return to the picker;
     /// everything else edits a setting and saves it, the way the GTK window did.
     fn settings_key(&mut self, key: Keysym) {
@@ -586,7 +632,7 @@ impl KeyboardHandler for App {
 impl PointerHandler for App {
     fn pointer_frame(
         &mut self,
-        _: &Connection,
+        conn: &Connection,
         _: &QueueHandle<Self>,
         _: &wl_pointer::WlPointer,
         events: &[PointerEvent],
@@ -598,7 +644,25 @@ impl PointerHandler for App {
         for event in events {
             let (px, py) = event.position;
             match event.kind {
+                PointerEventKind::Enter { .. } => {
+                    // The enter serial is what set_cursor needs, so the first image can
+                    // only be asked for once we are actually over the surface.
+                    let icon = self.cursor_for(px, py);
+                    self.cursor = CursorIcon::Default;
+                    self.set_cursor(conn, icon);
+                }
                 PointerEventKind::Motion { .. } => {
+                    let icon = self.cursor_for(px, py);
+                    self.set_cursor(conn, icon);
+                    if self.ui.mode == Mode::Settings {
+                        let (cx, cy) = render::card_origin(w, h);
+                        let row = render::setting_at(px - cx, py - cy);
+                        if row != self.ui.hover_setting {
+                            self.ui.hover_setting = row;
+                            dirty = true;
+                        }
+                        continue;
+                    }
                     let hover = self.ui.cell_at(px - vx, py - vy);
                     if hover != self.ui.hover {
                         self.ui.hover = hover;
@@ -606,7 +670,7 @@ impl PointerHandler for App {
                     }
                 }
                 PointerEventKind::Leave { .. } => {
-                    if self.ui.hover.take().is_some() {
+                    if self.ui.hover.take().is_some() || self.ui.hover_setting.take().is_some() {
                         dirty = true;
                     }
                 }
@@ -624,6 +688,19 @@ impl PointerHandler for App {
                     if self.ui.mode == Mode::Settings {
                         // A tone swatch is a target in its own right, so check it before
                         // falling back to "which row was clicked".
+                        if let Some(d) = render::stepper_at(px - cx, py - cy) {
+                            let (tone, limit) = {
+                                let st = self.store.borrow();
+                                (st.settings().skin_tone, st.settings().recent_limit)
+                            };
+                            self.ui.setting = render::setting_at(px - cx, py - cy)
+                                .unwrap_or(self.ui.setting);
+                            if let Some(action) = self.ui.adjust_setting(d, tone, limit) {
+                                self.apply(action);
+                            }
+                            dirty = true;
+                            continue;
+                        }
                         if let Some(tone) = render::tone_at(px - cx, py - cy) {
                             self.ui.setting = render::tone_row();
                             self.apply(Action::SetTone(tone));
@@ -641,6 +718,12 @@ impl PointerHandler for App {
                     }
                     if render::gear_hit(px - cx, py - cy) {
                         self.ui.open_settings();
+                        dirty = true;
+                        continue;
+                    }
+                    if let Some(i) = render::tab_at(px - cx, py - cy, self.ui.grid.sections.len())
+                    {
+                        self.ui.goto_section(i);
                         dirty = true;
                         continue;
                     }
@@ -689,7 +772,17 @@ impl SeatHandler for App {
                 }
             }
             Capability::Pointer if self.pointer.is_none() => {
-                match self.seat.get_pointer(qh, &seat) {
+                // A Wayland client draws its own cursor. Without a themed pointer the
+                // image is whatever the previously focused surface left behind.
+                let surface = self.compositor.create_surface(qh);
+                let shm = self.shm.wl_shm().clone();
+                match self.seat.get_pointer_with_theme::<_, ()>(
+                    qh,
+                    &seat,
+                    &shm,
+                    surface,
+                    ThemeSpec::default(),
+                ) {
                     Ok(p) => self.pointer = Some(p),
                     Err(e) => eprintln!("emoji-picker: no pointer ({e})"),
                 }
@@ -713,7 +806,7 @@ impl SeatHandler for App {
             }
             Capability::Pointer => {
                 if let Some(p) = self.pointer.take() {
-                    p.release();
+                    p.pointer().release();
                 }
             }
             _ => {}

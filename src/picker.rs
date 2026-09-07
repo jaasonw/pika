@@ -64,6 +64,9 @@ pub struct Picker {
     pub mode: Mode,
     /// Selected settings row, when `mode` is Settings.
     pub setting: usize,
+    /// Settings row under the pointer, drawn apart from the keyboard selection so the two
+    /// do not fight over the same highlight.
+    pub hover_setting: Option<usize>,
     /// Set once the recents list has been cleared this session, so the row can say so.
     pub cleared_recents: bool,
     /// Set once the portal token has been dropped this session.
@@ -87,6 +90,7 @@ impl Picker {
         Picker {
             mode: Mode::Browse,
             setting: 0,
+            hover_setting: None,
             cleared_recents: false,
             reset_paste: false,
             query: String::new(),
@@ -103,11 +107,13 @@ impl Picker {
         self.mode = Mode::Settings;
         self.setting = 0;
         self.hover = None;
+        self.hover_setting = None;
     }
 
     /// Leave settings, rebuilding the grid so a tone or recents change is reflected.
     pub fn close_settings(&mut self, recents: Vec<String>, tone: u8) {
         self.mode = Mode::Browse;
+        self.hover_setting = None;
         self.recents = recents;
         self.tone = tone;
         self.rebuild();
