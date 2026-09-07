@@ -42,6 +42,12 @@ use wayland_client::{Connection, QueueHandle};
 const FALLBACK: (u32, u32) = (1920, 1080);
 
 pub fn run(flags: Flags) -> ExitCode {
+    if flags.daemon {
+        // Better to say so than to accept the flag and behave as a one-shot. Staying
+        // resident bought startup time that this backend no longer spends, so the mode is
+        // on hold rather than pending; see the plan.
+        eprintln!("emoji-picker: --daemon is not implemented on the native backend, running once");
+    }
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(e) => {
