@@ -17,7 +17,9 @@ Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
   clipboard history stays clean. Apps that can't take a direct insert fall back to
   clipboard-and-paste automatically.
 - **Nothing running in the background.** The hotkey starts it, picking an emoji ends it.
-  A resident mode is available if you want the window to appear instantly.
+  It opens in well under a tenth of a second, so there is nothing to keep resident.
+- **Small.** No widget toolkit: a native Wayland client drawing with cairo. ~37 MB
+  resident, of which 14 MB is the colour emoji font itself.
 
 ## How it compares
 
@@ -49,7 +51,8 @@ design, where rofimoji and bemoji run on anything with a dmenu-style launcher.
 ```
 
 This builds the binary, puts it in `~/.local/bin`, and installs a hidden `.desktop`
-entry. Requires a Rust toolchain and GTK 4.
+entry. Requires a Rust toolchain, and cairo and pango at runtime — both of which a KDE
+desktop already has.
 
 ### Bind a hotkey
 
@@ -67,8 +70,11 @@ and `Meta+;` are both good choices.
 | --- | --- |
 | type | search by name and keyword |
 | ← ↑ ↓ → | move around the grid |
+| Page Up / Page Down | scroll a screenful |
 | Enter | insert the selected emoji |
 | Tab / Shift-Tab | next / previous category |
+| Ctrl-U / Ctrl-W | clear the search / delete a word |
+| Ctrl-, | open settings |
 | Esc, or click outside | cancel |
 | click | insert |
 
@@ -81,20 +87,7 @@ Pressing the hotkey again while the picker is open closes it.
 | `--no-insert` | copy to the clipboard only; insert into nothing |
 | `--copy` | also put the emoji on the clipboard when it was inserted directly |
 | `--print` | write the chosen emoji to stdout as well |
-| `--daemon` | stay resident, so the window appears instantly |
 | `--test-im`, `--test-paste` | check one insert route on its own, for debugging |
-
-### Running it resident
-
-By default nothing stays in memory between uses. If you would rather trade ~20 MB of RAM
-for an instantly appearing window:
-
-```sh
-cp contrib/emoji-picker.service ~/.config/systemd/user/
-systemctl --user enable --now emoji-picker
-```
-
-The same hotkey works either way — starting or stopping the service is the whole switch.
 
 ## Troubleshooting
 
@@ -109,15 +102,17 @@ again. If you declined it, revoke and retry under System Settings → Applicatio
 Remote Desktop.
 
 **KDE keeps telling me a remote control session started.** That notification comes from
-the fallback paste route. `docs/` explains how to mute it, and why you might not want to.
+the fallback paste route. [AGENTS.md](AGENTS.md) explains how to mute it, and why you
+might not want to.
 
 **Emoji show as blank boxes.** Install a colour emoji font, e.g. `noto-fonts-emoji`.
 
 ## Configuration
 
-The gear beside the search box opens the settings: whether to insert or only copy,
-whether to always copy as well, the skin tone, how many recents to keep, and a reset for
-the saved paste permission.
+The gear beside the search box — or `Ctrl-,` — opens the settings: whether to insert or
+only copy, whether to always copy as well, the skin tone, how many recents to keep, and a
+reset for the saved paste permission. Arrows move and change, Enter activates, Escape goes
+back.
 
 Everything lives in `~/.config/emoji-picker/state.json`. Delete it to start over.
 

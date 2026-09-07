@@ -28,35 +28,44 @@ pub fn request_toggle() -> bool {
     true
 }
 
-/// Listen for toggle requests, calling `on_toggle` on the GTK main thread for each.
-pub fn serve(on_toggle: impl Fn() + 'static) -> std::io::Result<()> {
+/// Bind the single-instance socket.
+///
+/// The two backends drive it differently - GTK wants a thread feeding a channel, the
+/// native client hands the listener straight to calloop - so binding is separate from
+/// pumping.
+pub fn bind() -> std::io::Result<UnixListener> {
     let path = socket_path();
     // A stale socket from a killed daemon would block bind(); nothing is listening on it
     // if the connect probe just failed.
     if !request_toggle() {
         let _ = std::fs::remove_file(&path);
     }
-    let listener = UnixListener::bind(&path)?;
+    UnixListener::bind(&path)
+}
 
+/// Read a toggle request and acknowledge it, so the sender does not block on our reply.
+pub fn ack(stream: &mut UnixStream) {
+    let mut buf = [0u8; 16];
+    let _ = stream.read(&mut buf);
+    let _ = stream.write_all(b"ok");
+}
+
+/// Pump the socket from a thread, delivering each toggle over a channel. Used by the GTK
+/// backend, whose main loop can await the receiver but cannot poll a raw fd.
+#[cfg(feature = "gtk")]
+pub fn serve() -> std::io::Result<async_channel::Receiver<()>> {
+    let listener = bind()?;
     let (tx, rx) = async_channel::unbounded::<()>();
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let mut stream = stream;
-            let mut buf = [0u8; 16];
-            let _ = stream.read(&mut buf);
-            let _ = stream.write_all(b"ok");
+            ack(&mut stream);
             if tx.send_blocking(()).is_err() {
                 break;
             }
         }
     });
-
-    gtk4::glib::spawn_future_local(async move {
-        while rx.recv().await.is_ok() {
-            on_toggle();
-        }
-    });
-    Ok(())
+    Ok(rx)
 }
 
 pub fn cleanup() {

@@ -1,16 +1,32 @@
+mod commit;
 mod emoji;
 mod im;
 mod insert;
 mod ipc;
-mod settings;
 mod store;
+
+#[cfg(feature = "gtk")]
+mod backend_gtk;
+#[cfg(feature = "gtk")]
+mod settings;
+#[cfg(feature = "gtk")]
 mod ui;
 
-use gtk4 as gtk;
-use gtk::prelude::*;
-use gtk4::glib;
-use std::cell::RefCell;
-use std::rc::Rc;
+#[cfg(feature = "native")]
+mod backend_native;
+#[cfg(feature = "native")]
+mod grid;
+#[cfg(feature = "native")]
+mod picker;
+#[cfg(feature = "native")]
+mod render;
+#[cfg(feature = "native")]
+mod theme;
+
+#[cfg(not(any(feature = "gtk", feature = "native")))]
+compile_error!("enable exactly one UI backend: --features gtk (default) or --features native");
+
+use std::process::ExitCode;
 use std::time::Duration;
 
 const USAGE: &str = "\
@@ -30,304 +46,71 @@ usage: emoji-picker [options]
   -h, --help     this text
 ";
 
-/// Upper bound on waiting for the portal, so a hung D-Bus call cannot wedge the app.
-const PASTE_TIMEOUT: Duration = Duration::from_secs(20);
-/// How long to wait for a text field to offer us input-method focus before deciding this
-/// app does not speak text-input and falling back to the portal.
-const IM_WAIT: Duration = Duration::from_millis(400);
+/// Runtime flags, parsed once and handed to whichever UI backend is compiled in.
+#[derive(Clone, Copy)]
+pub struct Flags {
+    pub daemon: bool,
+    pub no_paste: bool,
+    pub always_copy: bool,
+    pub print: bool,
+    pub time_launch: bool,
+}
 
 /// Process start, for `--time-launch`. Taken before anything else runs.
 static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
-fn since_start() -> Duration {
+pub fn since_start() -> Duration {
     START.get().map(|t| t.elapsed()).unwrap_or_default()
 }
 
-fn main() -> glib::ExitCode {
+fn main() -> ExitCode {
     let _ = START.set(std::time::Instant::now());
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.iter().any(|a| a == "-h" || a == "--help") {
+    let has = |f: &str| args.iter().any(|a| a == f);
+
+    if has("-h") || has("--help") {
         print!("{USAGE}");
-        return glib::ExitCode::SUCCESS;
+        return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--test-im") {
+    if has("--test-im") {
         im::test_commit();
-        return glib::ExitCode::SUCCESS;
+        return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--test-paste") {
+    if has("--test-paste") {
         insert::test_paste(20, 500);
-        return glib::ExitCode::SUCCESS;
+        return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--bench") {
+    if has("--bench") {
         emoji::bench();
-        return glib::ExitCode::SUCCESS;
+        return ExitCode::SUCCESS;
     }
-    // Report how long the window took to reach the screen, then leave. Cold start is
-    // mostly GTK, Wayland and font setup rather than our own work, so the only way to
-    // tell an optimisation from a placebo here is to measure to first frame.
-    let time_launch = args.iter().any(|a| a == "--time-launch");
-    let daemon = args.iter().any(|a| a == "--daemon");
-    let no_paste = args.iter().any(|a| a == "--no-insert" || a == "--no-paste");
-    let always_copy = args.iter().any(|a| a == "--copy");
-    let print = args.iter().any(|a| a == "--print");
+
+    let flags = Flags {
+        daemon: has("--daemon"),
+        no_paste: has("--no-insert") || has("--no-paste"),
+        always_copy: has("--copy"),
+        print: has("--print"),
+        // Report how long the window took to reach the screen, then leave. Cold start is
+        // mostly toolkit, Wayland and font setup rather than our own work, so the only way
+        // to tell an optimisation from a placebo here is to measure to first frame.
+        time_launch: has("--time-launch"),
+    };
 
     // Another instance already owns the window: tell it to toggle and get out of the
     // way, so a second hotkey press closes the picker rather than opening a second one.
-    if !daemon && ipc::request_toggle() {
-        return glib::ExitCode::SUCCESS;
+    if !flags.daemon && ipc::request_toggle() {
+        return ExitCode::SUCCESS;
     }
 
-    let app = gtk::Application::builder()
-        .application_id("dev.jason.EmojiPicker")
-        .flags(gtk::gio::ApplicationFlags::NON_UNIQUE | gtk::gio::ApplicationFlags::HANDLES_COMMAND_LINE)
-        .build();
-    // We parse argv ourselves; keep GApplication from rejecting our flags.
-    app.connect_command_line(|app, _| {
-        app.activate();
-        glib::ExitCode::SUCCESS
-    });
+    // While both backends are compiled in, the native one wins - it is the one being
+    // brought up, and building with both is how the two get compared.
+    #[cfg(feature = "native")]
+    let code = backend_native::run(flags);
+    #[cfg(all(feature = "gtk", not(feature = "native")))]
+    let code = backend_gtk::run(flags);
 
-    app.connect_activate(move |app| {
-        let st = Rc::new(RefCell::new(store::Store::load()));
-        // The portal agent is spawned only if the input-method route fails: opening a
-        // RemoteDesktop session is what raises KDE's permission dialog and its
-        // "remote control" notification, and most inserts never need it.
-        let agent: Rc<RefCell<Option<insert::PasteAgent>>> = Rc::new(RefCell::new(None));
-
-        let picker: Rc<RefCell<Option<Rc<ui::Picker>>>> = Rc::new(RefCell::new(None));
-
-        let on_pick = {
-            let app = app.clone();
-            let st = st.clone();
-            let agent = agent.clone();
-            let picker = picker.clone();
-            move |ch: &str| {
-                let ch = ch.to_string();
-                if print {
-                    println!("{ch}");
-                }
-                st.borrow_mut().record_use(&ch);
-
-                // Hide first: the insert has to land in whatever had focus before us.
-                if let Some(p) = picker.borrow().as_ref() {
-                    p.window.set_visible(false);
-                }
-
-                let app = app.clone();
-                let st = st.clone();
-                let agent = agent.clone();
-                let picker = picker.clone();
-                // Let the hide reach the compositor before any key event goes out.
-                glib::timeout_add_local_once(Duration::from_millis(30), move || {
-                    let prefs = {
-                        let st = st.borrow();
-                        (st.settings().insert, st.settings().always_copy)
-                    };
-                    finish(Ctx {
-                        ch: &ch,
-                        app: &app,
-                        st: &st,
-                        agent: &agent,
-                        picker: &picker,
-                        daemon,
-                        // Flags win for a single run; otherwise the saved settings do.
-                        no_paste: no_paste || !prefs.0,
-                        always_copy: always_copy || prefs.1,
-                    });
-                });
-            }
-        };
-
-        let on_dismiss = {
-            let app = app.clone();
-            let picker = picker.clone();
-            move || {
-                if let Some(p) = picker.borrow().as_ref() {
-                    p.window.set_visible(false);
-                }
-                if !daemon {
-                    app.quit();
-                }
-            }
-        };
-
-        let on_settings = {
-            let app = app.clone();
-            let st = st.clone();
-            let picker = picker.clone();
-            move || {
-                let st_inner = st.clone();
-                let picker = picker.clone();
-                settings::present(&app, st.clone(), move || {
-                    // Back to the picker, with any cleared recents reflected.
-                    if let Some(p) = picker.borrow().as_ref() {
-                        let (recents, tone) = {
-                            let st = st_inner.borrow();
-                            (st.recents().to_vec(), st.settings().skin_tone)
-                        };
-                        p.present(recents, tone);
-                    }
-                });
-            }
-        };
-
-        let p = ui::Picker::new(
-            app,
-            st.borrow().recents().to_vec(),
-            on_pick,
-            on_dismiss,
-            on_settings,
-        );
-        *picker.borrow_mut() = Some(p.clone());
-
-        // Both modes serve the socket, so the hotkey toggles in either one.
-        {
-            let picker = picker.clone();
-            let st = st.clone();
-            let app = app.clone();
-            let _ = ipc::serve(move || {
-                let Some(p) = picker.borrow().clone() else { return };
-                if p.window.is_visible() {
-                    p.window.set_visible(false);
-                    if !daemon {
-                        app.quit();
-                    }
-                } else {
-                    let (recents, tone) = {
-                        let st = st.borrow();
-                        (st.recents().to_vec(), st.settings().skin_tone)
-                    };
-                    p.present(recents, tone);
-                }
-            });
-        }
-
-        if daemon {
-            // Hold the process open while the window is hidden. The guard must outlive
-            // the closure, and the daemon lives until the process exits anyway.
-            std::mem::forget(app.hold());
-        }
-
-        let (recents, tone) = {
-            let st = st.borrow();
-            (st.recents().to_vec(), st.settings().skin_tone)
-        };
-        p.present(recents, tone);
-
-        if time_launch {
-            // The first frame is the number that matters: everything before it is
-            // invisible to the user, and everything after is already interactive.
-            let app = app.clone();
-            let p = p.clone();
-            let window = p.window.clone();
-            window.add_tick_callback(move |_, _| {
-                println!("first frame at {:?}", since_start());
-                // The list finishes filling from an idle callback, so report the settled
-                // state too: a short count here means the tail never landed.
-                let (app, p) = (app.clone(), p.clone());
-                glib::timeout_add_local_once(Duration::from_millis(500), move || {
-                    println!("settled at {:?}, {}", since_start(), p.debug_state());
-                    app.quit();
-                });
-                glib::ControlFlow::Break
-            });
-        }
-
-        // Closing the window without picking should still end a one-shot run.
-        if !daemon {
-            let app = app.clone();
-            p.window.connect_close_request(move |_| {
-                app.quit();
-                glib::Propagation::Proceed
-            });
-        }
-    });
-
-    let code = app.run_with_args::<String>(&[]);
     // We owned the socket in either mode; leaving it behind would make the next
     // invocation think an instance is still up.
     ipc::cleanup();
     code
-}
-
-struct Ctx<'a> {
-    ch: &'a str,
-    app: &'a gtk::Application,
-    st: &'a Rc<RefCell<store::Store>>,
-    agent: &'a Rc<RefCell<Option<insert::PasteAgent>>>,
-    picker: &'a Rc<RefCell<Option<Rc<ui::Picker>>>>,
-    daemon: bool,
-    no_paste: bool,
-    always_copy: bool,
-}
-
-/// Runs after the window is hidden: insert the emoji, then quit or go back to sleep.
-///
-/// Two routes, in order of preference:
-/// 1. Commit as an input method. Direct, invisible, needs no permission - but only
-///    reaches apps speaking zwp_text_input, so XWayland clients miss it.
-/// 2. Clipboard plus a portal-synthesized Ctrl+V. Works anywhere, at the cost of a
-///    one-time permission dialog.
-fn finish(cx: Ctx) {
-    let mut inserted = false;
-
-    if !cx.no_paste {
-        match im::commit(cx.ch, IM_WAIT) {
-            Ok(()) => inserted = true,
-            Err(e) => eprintln!("emoji-picker: input method unavailable ({e}), using portal"),
-        }
-    }
-
-    if !inserted || cx.always_copy || cx.no_paste {
-        if let Err(e) = insert::copy_to_clipboard(cx.ch) {
-            eprintln!("emoji-picker: clipboard failed: {e}");
-        }
-    }
-
-    if !inserted && !cx.no_paste {
-        // Only now is a portal session worth its permission prompt.
-        if cx.agent.borrow().is_none() {
-            let token = cx.st.borrow().restore_token().map(str::to_owned);
-            *cx.agent.borrow_mut() = Some(insert::PasteAgent::spawn(token));
-        }
-        let reply = cx
-            .agent
-            .borrow()
-            .as_ref()
-            .map(|a| a.paste_now(PASTE_TIMEOUT));
-        match reply {
-            Some(insert::Reply::Pasted(token)) => {
-                let mut st = cx.st.borrow_mut();
-                st.set_restore_token(token);
-                st.set_paste_denied(false);
-                inserted = true;
-            }
-            Some(insert::Reply::Failed(e)) => {
-                eprintln!("emoji-picker: paste failed: {e}");
-                let mut st = cx.st.borrow_mut();
-                // Only explain the fallback the first time it happens.
-                if !st.paste_denied() {
-                    insert::notify(
-                        "Copied. Press Ctrl+V to insert.\nAllow \"Remote Desktop\" to paste automatically.",
-                    );
-                    st.set_paste_denied(true);
-                }
-            }
-            None => {}
-        }
-        // The session is single-use once started; drop it so the next pick gets a fresh
-        // one rather than a spent handle.
-        *cx.agent.borrow_mut() = None;
-    }
-
-    if !inserted && cx.no_paste {
-        insert::notify("Copied to clipboard.");
-    }
-    cx.st.borrow().save();
-
-    if cx.daemon {
-        let _ = cx.picker;
-    } else {
-        cx.app.quit();
-    }
 }
