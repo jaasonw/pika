@@ -37,10 +37,15 @@ pub struct Ctx<'a> {
 ///    one-time permission dialog.
 pub fn finish(cx: Ctx) {
     let mut inserted = false;
+    // The focused app speaks no text-input at all, so the portal has to carry this pick.
+    // Worth saying out loud: it is the difference between an instant insert and a slow one
+    // behind a permission dialog, and the app is going to do it on every pick.
+    let mut no_focus = false;
 
     if !cx.no_paste {
         match im::commit(cx.ch, IM_WAIT) {
             Ok(()) => inserted = true,
+            Err(im::Error::NoFocus) => no_focus = true,
             Err(e) => eprintln!("emoji-picker: input method unavailable ({e}), using portal"),
         }
     }
@@ -85,6 +90,13 @@ pub fn finish(cx: Ctx) {
         // The session is single-use once started; drop it so the next pick gets a fresh
         // one rather than a spent handle.
         *cx.agent.borrow_mut() = None;
+    }
+
+    // Only when the portal actually covered for the missing text field. A failed paste
+    // has already said something more useful about how to fix it, and two notifications
+    // for one pick is one too many.
+    if no_focus && inserted {
+        insert::notify("No text field found. Copied and pasted instead.");
     }
 
     if !inserted && cx.no_paste {

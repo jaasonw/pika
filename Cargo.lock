@@ -240,6 +240,7 @@ dependencies = [
  "dirs",
  "gtk4",
  "gtk4-layer-shell",
+ "libc",
  "nucleo-matcher",
  "pango",
  "pangocairo",

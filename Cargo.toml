@@ -32,6 +32,7 @@ native = [
 ashpd = { version = "0.13.13", features = ["remote_desktop", "screencast"] }
 async-channel = "2.5.0"
 dirs = "7.0.0"
+libc = "0.2.189"
 # v4_8 is what exposes GtkSearchEntry's search-delay; the target desktop ships 4.22.
 gtk4 = { version = "0.11.4", features = ["v4_8"], optional = true }
 gtk4-layer-shell = { version = "0.8.1", optional = true }

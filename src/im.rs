@@ -10,8 +10,34 @@
 //! `zwp_text_input_v2/v3` - so XWayland clients generally miss out. Every failure here
 //! is expected to fall back to the portal.
 
+use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
 use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_registry};
+
+/// Why the input-method route did not carry the emoji.
+///
+/// The two cases want different handling, which is the whole reason this is not a
+/// `String`: [`Error::NoFocus`] means the app on the other end does not speak
+/// `zwp_text_input` at all, so no amount of retrying or escalating reaches it, while
+/// [`Error::Unusable`] is about this route specifically and leaves the portal worth a try.
+#[derive(Debug)]
+pub enum Error {
+    /// Nothing took input-method focus before the deadline: an X11 client, or Chromium
+    /// without `--enable-wayland-ime`.
+    NoFocus,
+    /// The route itself is unavailable - no interface, another client already holds it,
+    /// or the connection broke.
+    Unusable(String),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::NoFocus => f.write_str("no text field took input-method focus"),
+            Error::Unusable(e) => f.write_str(e),
+        }
+    }
+}
 
 pub mod proto {
     #![allow(non_camel_case_types, clippy::all)]
@@ -103,36 +129,74 @@ impl Dispatch<ZwpInputMethodContextV1, ()> for State {
 /// Returns `Err` with the reason when this route is not usable, so the caller can fall
 /// back to the portal. Call it only once the picker's own window is hidden - otherwise
 /// the focused text input is ours.
-pub fn commit(text: &str, wait: Duration) -> Result<(), String> {
-    let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
+pub fn commit(text: &str, wait: Duration) -> Result<(), Error> {
+    let unusable = |e: &dyn std::fmt::Display| Error::Unusable(e.to_string());
+
+    let conn = Connection::connect_to_env().map_err(|e| unusable(&e))?;
     let display = conn.display();
     let mut queue = conn.new_event_queue::<State>();
     let qh = queue.handle();
     display.get_registry(&qh, ());
 
     let mut state = State::default();
-    queue.roundtrip(&mut state).map_err(|e| e.to_string())?;
+    queue.roundtrip(&mut state).map_err(|e| unusable(&e))?;
     if state.method.is_none() {
         state.unavailable = true;
-        return Err("compositor does not offer zwp_input_method_v1".into());
+        return Err(Error::Unusable(
+            "compositor does not offer zwp_input_method_v1".into(),
+        ));
     }
 
     // Wait for the compositor to hand us a context for the focused field.
+    //
+    // This polls rather than calling `blocking_dispatch`, which waits on the socket with
+    // no timeout. When the focused app speaks no text-input the compositor sends nothing
+    // at all - not even a deactivate - so a blocking wait never returns and `wait` never
+    // elapses. The picker would then sit here until some unrelated window took text
+    // focus, and commit the emoji into that one instead.
     let deadline = Instant::now() + wait;
-    while state.context.is_none() {
-        if Instant::now() >= deadline {
-            return Err("no text field took input-method focus".into());
+    loop {
+        queue.dispatch_pending(&mut state).map_err(|e| unusable(&e))?;
+        if state.context.is_some() {
+            break;
         }
-        queue
-            .blocking_dispatch(&mut state)
-            .map_err(|e| e.to_string())?;
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(Error::NoFocus);
+        }
+        conn.flush().map_err(|e| unusable(&e))?;
+        // `None` means another thread is already reading, or events arrived between the
+        // dispatch and now; either way go round and dispatch them rather than wait.
+        let Some(guard) = queue.prepare_read() else {
+            continue;
+        };
+        let mut pfd = libc::pollfd {
+            fd: guard.connection_fd().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // At least 1ms, so a sub-millisecond remainder still gets a real poll.
+        let ms = (left.as_millis().max(1).min(i32::MAX as u128)) as libc::c_int;
+        match unsafe { libc::poll(&mut pfd, 1, ms) } {
+            0 => return Err(Error::NoFocus),
+            n if n < 0 => {
+                let e = std::io::Error::last_os_error();
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(unusable(&e));
+            }
+            _ => {
+                guard.read().map_err(|e| unusable(&e))?;
+            }
+        }
     }
 
     let context = state.context.clone().unwrap();
     context.commit_string(state.serial, text.to_string());
     state.committed = true;
-    conn.flush().map_err(|e| e.to_string())?;
-    queue.roundtrip(&mut state).map_err(|e| e.to_string())?;
+    conn.flush().map_err(|e| unusable(&e))?;
+    queue.roundtrip(&mut state).map_err(|e| unusable(&e))?;
     Ok(())
 }
 
@@ -142,6 +206,7 @@ pub fn test_commit() {
     std::thread::sleep(Duration::from_secs(5));
     match commit("IM-OK", Duration::from_secs(3)) {
         Ok(()) => eprintln!("committed"),
+        Err(Error::NoFocus) => eprintln!("no text field took input-method focus in 3s"),
         Err(e) => eprintln!("input method unavailable: {e}"),
     }
 }

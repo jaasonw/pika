@@ -1,64 +1,52 @@
 # emoji-picker
 
-A grid emoji picker for KDE on Wayland, in the style of the Windows and macOS pickers.
+A 100% Wayland native grid emoji picker for KDE, in the style of the Windows and macOS pickers.
 Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
 
-![every emoji in one scrolling list, recents pinned at the top]()
+
+
+<p>
+  <img alt="every emoji in one scrolling list, recents pinned at the top — dark theme" src="docs/screenshot-dark.png" width="552">
+  <img alt="the same list in the light theme" src="docs/screenshot-light.png" width="552">
+</p>
+
+
 
 ## Features
 
 - **Everything in one list.** Recents pinned at the top, then every category behind its
-  own header. ~3,900 emoji, straight from Unicode.
-- **Search** by name and keyword — "cat", "kitten" and "smiling face" all land where you
-  expect.
-- **Skin tone** applied across the grid, chosen once in settings.
-- **Category tabs** jump to a section, and follow along as you scroll.
-- **Inserts directly** into the focused text field. No clipboard round trip, so your
-  clipboard history stays clean. Apps that can't take a direct insert fall back to
-  clipboard-and-paste automatically.
-- **Nothing running in the background.** The hotkey starts it, picking an emoji ends it.
-  It opens in well under a tenth of a second, so there is nothing to keep resident.
-- **Small.** No widget toolkit: a native Wayland client drawing with cairo. ~37 MB
-  resident, of which 14 MB is the colour emoji font itself.
+  own header
+- **Fuzzy Search** by name and keyword
+- **Skin tone** applied across the grid, configured in settings.
+- **Inserts directly** into the focused text field with clipboard fallback
+- **Daemonless**, no background process to listen to keypresses, blazingly fast cold start 🚀
+- **Small.** Zero dependency on GTK or QT, 100% native Wayland client drawing with cairo. ~37 MB
+  RAM usage when active, 5MB portable binary with no external dependencies (Except of course, Wayland and KDE)
+- **No helper binaries or elevated access** Other KDE emoji pickers depend on helper binaries like ydotool, wl-copy, wtype, rofi, etc. A process that can read every keystroke you type and costs extra memory as a background process
 
 ## How it compares
 
 Plenty of emoji pickers exist. What separates them on KDE Wayland is how they get the
 character into your text field — and most either can't, or need privileges to do it.
 
-| Picker | Insert mechanism | Extra setup it needs | Works on KDE Wayland |
-| --- | --- | --- | --- |
-| **this one** | Wayland input method, portal paste as fallback | none | yes |
-| plasma-emojier (KDE's own) | clipboard only | none | you paste it yourself |
-| [rofimoji](https://github.com/fdw/rofimoji) | `wtype` | a supported menu (rofi/wofi) | no — KWin has no virtual-keyboard protocol |
-| [bemoji](https://github.com/marty-oehme/bemoji) | `wtype` | a supported menu | no, same reason |
-| [jockel09/emoji-picker](https://github.com/jockel09/emoji-picker) | clipboard + `ydotool` Ctrl+V | ydotool daemon, your user in the `input` group | yes, at the cost of raw `/dev/uinput` access |
-| [im-emoji-picker](https://github.com/GaZaTu/im-emoji-picker) | input method plugin | fcitx5 or ibus installed and configured | yes, if you run one |
-| [Smile](https://github.com/mijorus/smile), Emote | clipboard, GNOME-oriented | none | you paste it yourself |
+| Picker                                                            | Insert mechanism                      | Extra setup it needs             | Works on KDE Wayland           | Search              | Skin tone        | Beyond plain emoji      | Daemonless          |
+| ----------------------------------------------------------------- | ------------------------------------- | -------------------------------- | ------------------------------ | ------------------- | ---------------- | ----------------------- | ------------------- |
+| **emoji-picker**                                                  | input method, portal paste fallback   | none                             | yes                            | fuzzy, ranked       | global           | no                      | yes                 |
+| plasma-emojier (KDE built in)                                        | clipboard only                        | none                             | you paste it yourself          | substring           | global           | no                      | yes                 |
+| [rofimoji](https://github.com/fdw/rofimoji)                       | `wtype`                               | a supported menu (rofi/wofi)     | no — KWin has no such protocol | via your menu       | global or prompt | Nerd Fonts, kaomoji, +  | yes                 |
+| [bemoji](https://github.com/marty-oehme/bemoji)                   | `wtype`                               | a supported menu                 | no, same reason                | via your menu       | filter only      | any list you feed it    | yes                 |
+| [jockel09/emoji-picker](https://github.com/jockel09/emoji-picker) | clipboard + `ydotool`/`dotool` Ctrl+V | `input` group, raw `/dev/uinput` | yes, at that cost              | substring, DE/EN    | global + gender  | favourites, kaomoji tab | with `dotool`       |
+| [emojipick](https://github.com/guitaripod/emojipick)              | clipboard + optional `ydotool` Ctrl+V | ydotoold, `input` group          | yes, same cost                 | fuzzy, tiered       | global           | no                      | no, resident daemon |
+| [im-emoji-picker](https://github.com/GaZaTu/im-emoji-picker)      | input method plugin                   | fcitx5 or ibus, configured       | yes, if you run one            | substring           | global + gender  | kaomoji view            | no, IM plugin       |
+| [Smile](https://github.com/mijorus/smile)                         | clipboard, GNOME-oriented             | none                             | you paste it yourself          | fuzzy, many locales | per emoji        | your own tags           | yes                 |
+| Emote                                                             | clipboard, X11 auto-paste only        | none                             | you paste it yourself          | substring           | no               | no                      | no, autostarts      |
 
-The `wtype` pickers are the trap: they install and run fine, then quietly do nothing,
-because KWin does not implement the protocol they type through.
-
-Where the others are ahead: `im-emoji-picker` and `jockel09/emoji-picker` both offer a
-gender selector, kaomoji and favourites, and rofimoji covers arbitrary Unicode
-characters, not just emoji. This one has none of those, and it targets KDE, where
-rofimoji and bemoji run on anything with a dmenu-style launcher.
+The `wtype` pickers will not work on KDE because KWin does not implement the protocol they type through
 
 ### Other Wayland desktops
 
-Only KDE is tested. Two protocols decide what happens elsewhere:
-
-| | Window opens | Inserts directly |
-| --- | --- | --- |
-| KDE Plasma | yes | yes |
-| Hyprland | yes | via the portal, so a permission dialog each session |
-| sway, river, Wayfire | yes | no — clipboard only |
-| GNOME | **no** | — |
-
-The window needs `zwlr_layer_shell_v1`, which every wlroots compositor has and Mutter
-does not, so on GNOME the picker exits rather than starting. Direct insertion needs
-`zwp_input_method_v1`; wlroots compositors implement **v2** instead, so they fall back to
-the portal where one is available and to the clipboard where it is not.
+Only KDE is officially supported. In an effort stay lightweight and portable, it will likely
+stay this way, but feel free to send a pull request if you would like to implement it.
 
 ## Install
 
@@ -82,29 +70,29 @@ and `Meta+;` are both good choices.
 
 ## Usage
 
-| Key | Action |
-| --- | --- |
-| type | search by name and keyword |
-| ← ↑ ↓ → | move around the grid |
-| Page Up / Page Down | scroll a screenful |
-| Enter | insert the selected emoji |
-| Tab / Shift-Tab | next / previous category |
-| Ctrl-, | open settings |
-| Esc, or click outside | cancel |
-| click | insert; a category tab jumps to it |
+| Key                   | Action                             |
+| --------------------- | ---------------------------------- |
+| type                  | search by name and keyword         |
+| ← ↑ ↓ →               | move around the grid               |
+| Page Up / Page Down   | scroll a screenful                 |
+| Enter                 | insert the selected emoji          |
+| Tab / Shift-Tab       | next / previous category           |
+| Ctrl-,                | open settings                      |
+| Esc, or click outside | cancel                             |
+| click                 | insert; a category tab jumps to it |
 
 In the search box:
 
-| Key | Action |
-| --- | --- |
-| Ctrl-← / Ctrl-→ | move the cursor a word |
-| Home / End | start / end of the line |
-| Backspace / Delete | delete either side of the cursor |
+| Key                    | Action                            |
+| ---------------------- | --------------------------------- |
+| Ctrl-← / Ctrl-→        | move the cursor a word            |
+| Home / End             | start / end of the line           |
+| Backspace / Delete     | delete either side of the cursor  |
 | Ctrl-Backspace, Ctrl-W | delete the word before the cursor |
-| Ctrl-Delete | delete the word after it |
-| Ctrl-U | clear |
-| Ctrl-V | paste |
-| click | put the cursor where you clicked |
+| Ctrl-Delete            | delete the word after it          |
+| Ctrl-U                 | clear                             |
+| Ctrl-V                 | paste                             |
+| click                  | put the cursor where you clicked  |
 
 Plain ← and → stay with the grid, so the text cursor moves by word rather than by
 character.
@@ -113,13 +101,13 @@ Pressing the hotkey again while the picker is open closes it.
 
 ### Options
 
-| Flag | Effect |
-| --- | --- |
-| `--no-insert` | copy to the clipboard only; insert into nothing |
-| `--copy` | also put the emoji on the clipboard when it was inserted directly |
-| `--print` | write the chosen emoji to stdout as well |
-| `--test-im`, `--test-paste` | check one insert route on its own, for debugging |
-| `--bench`, `--time-launch` | time the search table, or time to first frame |
+| Flag                        | Effect                                                            |
+| --------------------------- | ----------------------------------------------------------------- |
+| `--no-insert`               | copy to the clipboard only; insert into nothing                   |
+| `--copy`                    | also put the emoji on the clipboard when it was inserted directly |
+| `--print`                   | write the chosen emoji to stdout as well                          |
+| `--test-im`, `--test-paste` | check one insert route on its own, for debugging                  |
+| `--bench`, `--time-launch`  | time the search table, or time to first frame                     |
 
 ## Troubleshooting
 
@@ -140,6 +128,16 @@ might not want to.
 
 **Emoji show as blank boxes.** Install a colour emoji font, e.g. `noto-fonts-emoji`.
 
+### Why it asks for "Remote Desktop" permission
+
+The direct path is a Wayland input method, and it only reaches apps that support
+`zwp_text_input`. X11, XWayland, and certain Chromium and Electron apps do not.
+
+For those the picker has to press Ctrl+V for you, and KWin does not implement the
+protocol for faking keystrokes, any client could otherwise type into any window
+unprompted. The RemoteDesktop portal is used as an alternative. It will request
+permissions at first startup.
+
 ## Configuration
 
 The gear beside the search box — or `Ctrl-,` — opens the settings: whether to insert or
@@ -157,5 +155,7 @@ Unicode, and the Wayland and KDE specifics that shaped the implementation.
 ## Licence
 
 MIT — see [LICENSE](LICENSE).
+
+Open source under MIT License
 
 Emoji names and keywords are Unicode data, under their own terms; see `data/LICENSE`.
