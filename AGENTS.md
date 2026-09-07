@@ -129,15 +129,15 @@ update breaks something in the layer-shell path.
   sources. `blocking_dispatch` would have needed a second thread for the socket.
 - **Layout is arithmetic, not measurement.** `grid.rs` knows every row's height by
   construction, so `offsets` is a prefix sum and `row_at` is a binary search. The GTK build
-  could not do this: `GtkListView` builds a widget per item up to a working set of ~205, the
-  browse list is 177 rows, so a full splice built ~2,600 widgets at 40-60 ms. That forced a
-  head-then-tail fill, a generation counter to drop a stale tail, and a `measure` pass to
-  learn what GTK had actually laid out. None of that survives — 160 rows of `&'static str`
-  build in microseconds.
+  could not do this: `GtkListView` builds a widget per item up to a working set of ~205, and
+  the browse list is 174 rows before recents are added, so a full splice built ~2,600 widgets
+  at 40-60 ms. That forced a head-then-tail fill, a generation counter to drop a stale tail,
+  and a `measure` pass to learn what GTK had actually laid out. None of that survives — 174
+  rows of `&'static str` build in microseconds.
 - **Only visible rows are drawn.** `Grid::row_at(scroll)` finds the first, and the loop
   stops at the bottom of the viewport.
 - **`Fonts` is built once per frame, not once per cell.** Parsing
-  `FontDescription::from_string` for each of ~100 cells dominated a redraw.
+  `FontDescription::from_string` for each of the 96 visible cells dominated a redraw.
 - **The client draws its own cursor.** A plain `wl_pointer` never sets one, so the image
   stays whatever the previously focused surface left behind. `ThemedPointer` plus
   `set_cursor` fixes it; the request needs the latest enter serial, so the first image can
@@ -218,8 +218,8 @@ assigning `settings.recent_limit` directly skips the trim. Its bounds come from
 
 ## Skin tones
 
-The generated table lists every tone variant as its own entry, which is why People & Body
-holds ~2,400 of the ~3,900 rows. Showing them all would fill the grid with near-identical
+The generated table lists every tone variant as its own entry — 3,944 in all, of which
+1,914 are base emoji — which is why People & Body dominates it. Showing them all would fill the grid with near-identical
 hands and bury real hits in search, so:
 
 - **The table is laid out base-first.** `build.rs` emits the 1,914 base emoji in tab-group
@@ -346,10 +346,16 @@ mmapped, and ~9 MB is the full-output shm buffer.
 
 ## Testing
 
-`cargo test` covers the emoji table and search ranking — the parts that can be checked
-without a compositor. Everything else needs a real session:
+`cargo test` covers everything that does not need a compositor, which since the migration
+is most of the interesting logic: the emoji table and search ranking, plus the grid's
+geometry and navigation, the picker's state machine and settings actions, the search box's
+editing, the kdeglobals parser, and the card's layout arithmetic. 62 tests under `native`,
+15 under `gtk`.
 
-1. `cargo run` — grid appears centred, typing filters, Enter inserts.
+The rest needs a real session:
+
+1. `cargo run` — grid appears centred, typing filters, Enter inserts. The cursor is a hand
+   over cells, tabs and the gear, an I-beam over the search box, an arrow elsewhere.
 2. Insert into three toolkits: a Qt app, a GTK app, and an XWayland one. The last should
    fall back to the portal; watch stderr to confirm which route ran.
 3. Second hotkey press closes rather than opening a second window.

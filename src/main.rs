@@ -37,7 +37,7 @@ emoji-picker - grid emoji picker for KDE Wayland
 usage: emoji-picker [options]
 
   (no options)   show the picker once, insert the choice, exit
-  --daemon       stay resident; later invocations pop the existing window instantly
+  --daemon       stay resident (GTK build only; the native backend runs once)
   --no-insert    copy to the clipboard only, never insert into the focused field
   --copy         also put the emoji on the clipboard when it was inserted directly
   --print        write the chosen emoji to stdout as well

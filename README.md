@@ -41,8 +41,24 @@ because KWin does not implement the protocol they type through.
 
 Where the others are ahead: `im-emoji-picker` and `jockel09/emoji-picker` both offer a
 gender selector, kaomoji and favourites, and rofimoji covers arbitrary Unicode
-characters, not just emoji. This one has none of those. It is also KDE-specific by
-design, where rofimoji and bemoji run on anything with a dmenu-style launcher.
+characters, not just emoji. This one has none of those, and it targets KDE, where
+rofimoji and bemoji run on anything with a dmenu-style launcher.
+
+### Other Wayland desktops
+
+Only KDE is tested. Two protocols decide what happens elsewhere:
+
+| | Window opens | Inserts directly |
+| --- | --- | --- |
+| KDE Plasma | yes | yes |
+| Hyprland | yes | via the portal, so a permission dialog each session |
+| sway, river, Wayfire | yes | no — clipboard only |
+| GNOME | **no** | — |
+
+The window needs `zwlr_layer_shell_v1`, which every wlroots compositor has and Mutter
+does not, so on GNOME the picker exits rather than starting. Direct insertion needs
+`zwp_input_method_v1`; wlroots compositors implement **v2** instead, so they fall back to
+the portal where one is available and to the clipboard where it is not.
 
 ## Install
 
@@ -103,12 +119,14 @@ Pressing the hotkey again while the picker is open closes it.
 | `--copy` | also put the emoji on the clipboard when it was inserted directly |
 | `--print` | write the chosen emoji to stdout as well |
 | `--test-im`, `--test-paste` | check one insert route on its own, for debugging |
+| `--bench`, `--time-launch` | time the search table, or time to first frame |
 
 ## Troubleshooting
 
 **Nothing happens when I press the hotkey.** Run `~/.local/bin/emoji-picker` in a
 terminal. If it works there, the shortcut is still bound to an old command; re-add it in
-System Settings.
+System Settings. If it prints `compositor has no wlr-layer-shell`, you are on a desktop
+this cannot draw on — see [Other Wayland desktops](#other-wayland-desktops).
 
 **The emoji lands on the clipboard but not in the field.** Some apps (generally older
 X11 ones) can't take a direct insert, so the picker asks KDE for permission to paste on
