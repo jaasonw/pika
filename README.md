@@ -26,9 +26,6 @@ Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
 
 ## How it compares
 
-Plenty of emoji pickers exist. What separates them on KDE Wayland is how they get the
-character into your text field — and most either can't, or need privileges to do it.
-
 | Picker                                                            | Insert mechanism                             | Setup or dependencies            | Works on KDE Wayland           | Search              | Skin tone        | Beyond plain emoji      | Daemonless          |
 | ----------------------------------------------------------------- | -------------------------------------------- | -------------------------------- | ------------------------------ | ------------------- | ---------------- | ----------------------- | ------------------- |
 | **pika**                                                          | zwp_input_method_v1, portal paste fallback   | none                             | yes                            | fuzzy, ranked       | global           | no                      | yes                 |
@@ -153,8 +150,6 @@ See [AGENTS.md](AGENTS.md) for the architecture, how emoji data is regenerated f
 Unicode, and the Wayland and KDE specifics that shaped the implementation.
 
 ## Licence
-
-MIT — see [LICENSE](LICENSE).
 
 Open source under MIT License
 
