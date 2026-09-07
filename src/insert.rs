@@ -158,6 +158,6 @@ pub fn test_paste() {
 
 pub fn notify(body: &str) {
     let _ = std::process::Command::new("notify-send")
-        .args(["--app-name=Emoji Picker", "--icon=face-smile", "Emoji Picker", body])
+        .args(["--app-name=Pika", "--icon=face-smile", "Pika", body])
         .spawn();
 }

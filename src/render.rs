@@ -159,7 +159,7 @@ fn gear(cr: &Context, theme: &Theme, fonts: &Fonts) {
 /// The settings mode: a title and one row per option, navigated with the arrow keys.
 fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settings) {
     set_source(cr, theme.window_fg);
-    let layout = layout_for(cr, &fonts.ui_bold, "Emoji Picker Settings");
+    let layout = layout_for(cr, &fonts.ui_bold, "Pika Settings");
     cr.move_to(PAD + 4.0, SEARCH_Y + 6.0);
     pangocairo::functions::show_layout(cr, &layout);
 

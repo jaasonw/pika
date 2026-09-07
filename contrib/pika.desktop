@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Emoji Picker
+Name=Pika
 Comment=Pick an emoji and insert it into the focused field
-Exec=emoji-picker
+Exec=pika
 Icon=face-smile
 Terminal=false
 NoDisplay=true

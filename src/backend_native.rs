@@ -50,7 +50,7 @@ fn open_url(url: &str) {
         .stderr(Stdio::null())
         .spawn();
     if let Err(e) = spawned {
-        eprintln!("emoji-picker: could not open {url} ({e})");
+        eprintln!("pika: could not open {url} ({e})");
     }
 }
 
@@ -80,14 +80,14 @@ pub fn run(flags: Flags) -> ExitCode {
     let conn = match Connection::connect_to_env() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("emoji-picker: no Wayland display ({e})");
+            eprintln!("pika: no Wayland display ({e})");
             return ExitCode::FAILURE;
         }
     };
     let (globals, queue) = match registry_queue_init(&conn) {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("emoji-picker: registry init failed ({e})");
+            eprintln!("pika: registry init failed ({e})");
             return ExitCode::FAILURE;
         }
     };
@@ -96,28 +96,28 @@ pub fn run(flags: Flags) -> ExitCode {
     let compositor = match CompositorState::bind(&globals, &qh) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("emoji-picker: no wl_compositor ({e})");
+            eprintln!("pika: no wl_compositor ({e})");
             return ExitCode::FAILURE;
         }
     };
     let layer_shell = match LayerShell::bind(&globals, &qh) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("emoji-picker: compositor has no wlr-layer-shell ({e})");
+            eprintln!("pika: compositor has no wlr-layer-shell ({e})");
             return ExitCode::FAILURE;
         }
     };
     let shm = match Shm::bind(&globals, &qh) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("emoji-picker: no wl_shm ({e})");
+            eprintln!("pika: no wl_shm ({e})");
             return ExitCode::FAILURE;
         }
     };
 
     let surface = compositor.create_surface(&qh);
     let layer =
-        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("emoji-picker"), None);
+        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("pika"), None);
     // Anchored to every edge, so the surface spans the output and a click landing outside
     // the card still reaches us and dismisses.
     layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
@@ -131,7 +131,7 @@ pub fn run(flags: Flags) -> ExitCode {
     let pool = match SlotPool::new(4, &shm) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("emoji-picker: shm pool failed ({e})");
+            eprintln!("pika: shm pool failed ({e})");
             return ExitCode::FAILURE;
         }
     };
@@ -171,12 +171,12 @@ pub fn run(flags: Flags) -> ExitCode {
     let mut event_loop: EventLoop<App> = match EventLoop::try_new() {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("emoji-picker: event loop failed ({e})");
+            eprintln!("pika: event loop failed ({e})");
             return ExitCode::FAILURE;
         }
     };
     if let Err(e) = WaylandSource::new(conn.clone(), queue).insert(event_loop.handle()) {
-        eprintln!("emoji-picker: could not watch the wayland connection ({e})");
+        eprintln!("pika: could not watch the wayland connection ({e})");
         return ExitCode::FAILURE;
     }
 
@@ -196,15 +196,15 @@ pub fn run(flags: Flags) -> ExitCode {
                 Ok(PostAction::Continue)
             });
             if let Err(e) = registered {
-                eprintln!("emoji-picker: could not watch the toggle socket ({e})");
+                eprintln!("pika: could not watch the toggle socket ({e})");
             }
         }
-        Err(e) => eprintln!("emoji-picker: single-instance socket unavailable ({e})"),
+        Err(e) => eprintln!("pika: single-instance socket unavailable ({e})"),
     }
 
     while !app.exit {
         if let Err(e) = event_loop.dispatch(None, &mut app) {
-            eprintln!("emoji-picker: dispatch failed ({e})");
+            eprintln!("pika: dispatch failed ({e})");
             return ExitCode::FAILURE;
         }
     }
@@ -292,7 +292,7 @@ impl App {
             self.pool
                 .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
         else {
-            eprintln!("emoji-picker: could not allocate a {w}x{h} buffer");
+            eprintln!("pika: could not allocate a {w}x{h} buffer");
             self.exit = true;
             return;
         };
@@ -312,7 +312,7 @@ impl App {
                 )
             };
             let Ok(surface) = surface else {
-                eprintln!("emoji-picker: cairo surface creation failed");
+                eprintln!("pika: cairo surface creation failed");
                 self.exit = true;
                 return;
             };
@@ -342,7 +342,7 @@ impl App {
             render::CARD_H as i32 * self.scale,
         );
         if buffer.attach_to(wl_surface).is_err() {
-            eprintln!("emoji-picker: buffer attach failed");
+            eprintln!("pika: buffer attach failed");
             self.exit = true;
             return;
         }
@@ -830,7 +830,7 @@ impl SeatHandler for App {
             Capability::Keyboard if self.keyboard.is_none() => {
                 match self.seat.get_keyboard(qh, &seat, None) {
                     Ok(k) => self.keyboard = Some(k),
-                    Err(e) => eprintln!("emoji-picker: no keyboard ({e})"),
+                    Err(e) => eprintln!("pika: no keyboard ({e})"),
                 }
             }
             Capability::Pointer if self.pointer.is_none() => {
@@ -846,7 +846,7 @@ impl SeatHandler for App {
                     ThemeSpec::default(),
                 ) {
                     Ok(p) => self.pointer = Some(p),
-                    Err(e) => eprintln!("emoji-picker: no pointer ({e})"),
+                    Err(e) => eprintln!("pika: no pointer ({e})"),
                 }
             }
             _ => {}

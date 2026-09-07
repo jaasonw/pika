@@ -1,4 +1,4 @@
-# emoji-picker
+# pika
 
 A 100% Wayland native grid emoji picker for KDE, in the style of the Windows and macOS pickers.
 Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
@@ -31,7 +31,7 @@ character into your text field — and most either can't, or need privileges to 
 
 | Picker                                                            | Insert mechanism                      | Extra setup it needs             | Works on KDE Wayland           | Search              | Skin tone        | Beyond plain emoji      | Daemonless          |
 | ----------------------------------------------------------------- | ------------------------------------- | -------------------------------- | ------------------------------ | ------------------- | ---------------- | ----------------------- | ------------------- |
-| **emoji-picker**                                                  | input method, portal paste fallback   | none                             | yes                            | fuzzy, ranked       | global           | no                      | yes                 |
+| **pika**                                                          | input method, portal paste fallback   | none                             | yes                            | fuzzy, ranked       | global           | no                      | yes                 |
 | plasma-emojier (KDE built in)                                        | clipboard only                        | none                             | you paste it yourself          | substring           | global           | no                      | yes                 |
 | [rofimoji](https://github.com/fdw/rofimoji)                       | `wtype`                               | a supported menu (rofi/wofi)     | no — KWin has no such protocol | via your menu       | global or prompt | Nerd Fonts, kaomoji, +  | yes                 |
 | [bemoji](https://github.com/marty-oehme/bemoji)                   | `wtype`                               | a supported menu                 | no, same reason                | via your menu       | filter only      | any list you feed it    | yes                 |
@@ -61,7 +61,7 @@ desktop already has.
 ### Bind a hotkey
 
 System Settings → **Keyboard → Shortcuts → Add New → Command or Script**, enter the full
-path `~/.local/bin/emoji-picker`, click the shortcut field and press your key. `Meta+.`
+path `~/.local/bin/pika`, click the shortcut field and press your key. `Meta+.`
 and `Meta+;` are both good choices.
 
 > Add the shortcut through System Settings rather than by editing config files. KDE
@@ -111,7 +111,7 @@ Pressing the hotkey again while the picker is open closes it.
 
 ## Troubleshooting
 
-**Nothing happens when I press the hotkey.** Run `~/.local/bin/emoji-picker` in a
+**Nothing happens when I press the hotkey.** Run `~/.local/bin/pika` in a
 terminal. If it works there, the shortcut is still bound to an old command; re-add it in
 System Settings. If it prints `compositor has no wlr-layer-shell`, you are on a desktop
 this cannot draw on — see [Other Wayland desktops](#other-wayland-desktops).
@@ -145,7 +145,7 @@ only copy, whether to always copy as well, the skin tone, how many recents to ke
 reset for the saved paste permission. Arrows move and change, Enter activates, Escape goes
 back.
 
-Everything lives in `~/.config/emoji-picker/state.json`. Delete it to start over.
+Everything lives in `~/.config/pika/state.json`. Delete it to start over.
 
 ## Contributing
 

@@ -1,7 +1,11 @@
 [package]
-name = "emoji-picker"
+name = "pika-emoji"
 version = "0.1.0"
 edition = "2024"
+
+[[bin]]
+name = "pika"
+path = "src/main.rs"
 
 # A picker that is launched, used and closed in a couple of seconds spends a real share of
 # its life in the dynamic loader, so the binary is built for size and startup rather than

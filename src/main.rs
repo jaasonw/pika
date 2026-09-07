@@ -15,9 +15,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 const USAGE: &str = "\
-emoji-picker - grid emoji picker for KDE Wayland
+pika - grid emoji picker for KDE Wayland
 
-usage: emoji-picker [options]
+usage: pika [options]
 
   (no options)   show the picker once, insert the choice, exit
   --no-insert    copy to the clipboard only, never insert into the focused field

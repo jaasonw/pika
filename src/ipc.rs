@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 pub fn socket_path() -> PathBuf {
     let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
-    PathBuf::from(dir).join("emoji-picker.sock")
+    PathBuf::from(dir).join("pika.sock")
 }
 
 /// Ask the running instance to toggle its window. Returns false if there is none, in

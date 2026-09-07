@@ -62,7 +62,7 @@ pub struct Store {
 }
 
 fn path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("emoji-picker/state.json"))
+    Some(dirs::config_dir()?.join("pika/state.json"))
 }
 
 impl Store {

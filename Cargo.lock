@@ -218,28 +218,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
-name = "emoji-picker"
-version = "0.1.0"
-dependencies = [
- "ashpd",
- "cairo-rs",
- "dirs",
- "libc",
- "nucleo-matcher",
- "pango",
- "pangocairo",
- "serde",
- "serde_json",
- "smithay-client-toolkit",
- "tokio",
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
- "wl-clipboard-rs",
- "xkbcommon 0.9.0",
-]
-
-[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -742,6 +720,28 @@ dependencies = [
  "fixedbitset",
  "hashbrown 0.15.5",
  "indexmap",
+]
+
+[[package]]
+name = "pika-emoji"
+version = "0.1.0"
+dependencies = [
+ "ashpd",
+ "cairo-rs",
+ "dirs",
+ "libc",
+ "nucleo-matcher",
+ "pango",
+ "pangocairo",
+ "serde",
+ "serde_json",
+ "smithay-client-toolkit",
+ "tokio",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wl-clipboard-rs",
+ "xkbcommon 0.9.0",
 ]
 
 [[package]]

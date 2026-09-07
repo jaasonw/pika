@@ -1,4 +1,4 @@
-# Working on emoji-picker
+# Working on pika
 
 Context for anyone — human or agent — changing this code. The README is for people who
 just want to use it; everything below is why the implementation looks the way it does.
@@ -231,7 +231,7 @@ Recents store what was actually picked, so changing the tone does not rewrite hi
 
 ## Single instance (`src/ipc.rs`)
 
-Whichever process owns the window binds `$XDG_RUNTIME_DIR/emoji-picker.sock`. A later
+Whichever process owns the window binds `$XDG_RUNTIME_DIR/pika.sock`. A later
 invocation finds it, sends `toggle`, and exits, so a second hotkey press closes the
 picker instead of opening another. Stale sockets are probed and removed before binding.
 Two presses inside the ~100 ms before the socket is bound can still start two processes;
@@ -346,7 +346,7 @@ The rest needs a real session:
 2. Insert into three toolkits: a Qt app, a GTK app, and an XWayland one. The last should
    fall back to the portal; watch stderr to confirm which route ran.
 3. Second hotkey press closes rather than opening a second window.
-4. `pgrep emoji-picker` is empty between uses.
+4. `pgrep pika` is empty between uses.
 5. `Ctrl+,` or the gear opens settings; each row responds to arrows, Enter and a click;
    changing the tone and going back re-tones the grid.
 6. Build the other backend and repeat 1-4, so it does not rot.

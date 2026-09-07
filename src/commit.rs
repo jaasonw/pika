@@ -40,13 +40,13 @@ pub fn finish(cx: Ctx) {
         match im::commit(cx.ch, IM_WAIT) {
             Ok(()) => inserted = true,
             Err(im::Error::NoFocus) => no_focus = true,
-            Err(e) => eprintln!("emoji-picker: input method unavailable ({e}), using portal"),
+            Err(e) => eprintln!("pika: input method unavailable ({e}), using portal"),
         }
     }
 
     if !inserted || cx.always_copy || cx.no_paste {
         if let Err(e) = insert::copy_to_clipboard(cx.ch) {
-            eprintln!("emoji-picker: clipboard failed: {e}");
+            eprintln!("pika: clipboard failed: {e}");
         }
     }
 
@@ -61,7 +61,7 @@ pub fn finish(cx: Ctx) {
                 inserted = true;
             }
             insert::Reply::Failed(e) => {
-                eprintln!("emoji-picker: paste failed: {e}");
+                eprintln!("pika: paste failed: {e}");
                 let mut st = cx.st.borrow_mut();
                 // Only explain the fallback the first time it happens.
                 if !st.paste_denied() {
