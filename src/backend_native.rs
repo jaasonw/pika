@@ -1,25 +1,27 @@
-//! The native Wayland backend: smithay-client-toolkit + cairo + pangocairo, no GTK.
+//! Native Wayland backend using smithay-client-toolkit, Cairo, and Pango.
 //!
-//! The layer-shell surface, event loop, and the keyboard and pointer routing that drives
-//! `Picker`. A committed choice is inserted through the shared `commit` module. Settings
-//! are a second mode on the same card rather than a second surface; see
-//! plans/wayland-native-migration.md.
+//! Owns the layer surface, event loop, and input routing. Settings share the picker card
+//! as a mode; insertion is handled by the `commit` module.
 
 use crate::commit;
 use crate::ipc;
 use crate::picker::Picker;
-use crate::render;
 use crate::picker::{Action, Mode};
+use crate::render;
 use crate::store::Store;
 use crate::theme::Theme;
 use crate::{Flags, since_start};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
-use smithay_client_toolkit::reexports::calloop::generic::Generic;
-use smithay_client_toolkit::reexports::calloop::{EventLoop, Interest, Mode as PollMode, PostAction};
-use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
+use smithay_client_toolkit::reexports::calloop::generic::Generic;
+use smithay_client_toolkit::reexports::calloop::{
+    EventLoop, Interest, Mode as PollMode, PostAction,
+};
+use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
-use smithay_client_toolkit::seat::keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers};
+use smithay_client_toolkit::seat::keyboard::{
+    KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers,
+};
 use smithay_client_toolkit::seat::pointer::{
     CursorIcon, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
 };
@@ -59,15 +61,10 @@ fn open_url(url: &str) {
 fn clipboard_text() -> Option<String> {
     use std::io::Read;
     use wl_clipboard_rs::paste::{ClipboardType, MimeType, Seat, get_contents};
-    let (mut pipe, _) = get_contents(
-        ClipboardType::Regular,
-        Seat::Unspecified,
-        MimeType::Text,
-    )
-    .ok()?;
+    let (mut pipe, _) =
+        get_contents(ClipboardType::Regular, Seat::Unspecified, MimeType::Text).ok()?;
     let mut buf = String::new();
     pipe.read_to_string(&mut buf).ok()?;
-    // A single line: newlines in a search box are noise.
     let line = buf.lines().next().unwrap_or_default().to_string();
     (!line.is_empty()).then_some(line)
 }
@@ -116,12 +113,10 @@ pub fn run(flags: Flags) -> ExitCode {
     };
 
     let surface = compositor.create_surface(&qh);
-    let layer =
-        layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("pika"), None);
-    // Anchored to every edge, so the surface spans the output and a click landing outside
-    // the card still reaches us and dismisses.
+    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("pika"), None);
+    // A full-output surface receives outside-card clicks so it can dismiss the picker.
     layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-    // Exclusive so a hotkey-driven picker gets the keystrokes without a click first.
+    // A hotkey-driven picker must receive keys without requiring a click first.
     layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
     layer.commit();
 
@@ -166,8 +161,7 @@ pub fn run(flags: Flags) -> ExitCode {
         exit: false,
     };
 
-    // calloop rather than blocking_dispatch, so the single-instance socket can be watched
-    // in the same loop as the Wayland fd instead of from a second thread.
+    // Keep the socket and Wayland connection in one event loop.
     let mut event_loop: EventLoop<App> = match EventLoop::try_new() {
         Ok(l) => l,
         Err(e) => {
@@ -186,15 +180,15 @@ pub fn run(flags: Flags) -> ExitCode {
     match ipc::bind().and_then(|l| l.set_nonblocking(true).map(|()| l)) {
         Ok(listener) => {
             let source = Generic::new(listener, Interest::READ, PollMode::Level);
-            let registered = event_loop.handle().insert_source(source, |_, listener, app| {
-                // Level-triggered, so drain every pending connection before returning.
-                while let Ok((mut stream, _)) = listener.accept() {
-                    ipc::ack(&mut stream);
-                    // One-shot mode has nothing to toggle back to, so a toggle is a close.
-                    app.exit = true;
-                }
-                Ok(PostAction::Continue)
-            });
+            let registered = event_loop
+                .handle()
+                .insert_source(source, |_, listener, app| {
+                    while let Ok((mut stream, _)) = listener.accept() {
+                        ipc::ack(&mut stream);
+                        app.exit = true;
+                    }
+                    Ok(PostAction::Continue)
+                });
             if let Err(e) = registered {
                 eprintln!("pika: could not watch the toggle socket ({e})");
             }
@@ -241,7 +235,6 @@ pub fn run(flags: Flags) -> ExitCode {
     commit::finish(commit::Ctx {
         ch,
         st: &store,
-        // Flags win for a single run; otherwise the saved settings do.
         no_paste: flags.no_paste || !want_insert,
         always_copy: flags.always_copy || want_copy,
     });
@@ -288,9 +281,9 @@ impl App {
         );
         let stride = w * 4;
 
-        let Ok((buffer, canvas)) =
-            self.pool
-                .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
+        let Ok((buffer, canvas)) = self
+            .pool
+            .create_buffer(w, h, stride, wl_shm::Format::Argb8888)
         else {
             eprintln!("pika: could not allocate a {w}x{h} buffer");
             self.exit = true;
@@ -351,8 +344,6 @@ impl App {
         if !self.reported_first_frame {
             self.reported_first_frame = true;
             println!("first frame at {:?}", since_start());
-            // Nothing else to wait for yet: with no grid to fill there is no settled state
-            // to report, so a --time-launch run ends here.
             self.exit = true;
         }
     }
@@ -384,7 +375,11 @@ impl App {
                     || self.ui.cell_at(px - vx, py - vy).is_some()
             }
         };
-        if over { CursorIcon::Pointer } else { CursorIcon::Default }
+        if over {
+            CursorIcon::Pointer
+        } else {
+            CursorIcon::Default
+        }
     }
 
     /// Ask for a cursor, skipping the request when it has not changed - motion events
@@ -507,14 +502,7 @@ impl CompositorHandler for App {
     ) {
     }
 
-    fn frame(
-        &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &wl_surface::WlSurface,
-        _: u32,
-    ) {
-    }
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
 
     fn surface_enter(
         &mut self,
@@ -577,7 +565,6 @@ impl KeyboardHandler for App {
                 self.exit = true;
                 return;
             }
-            // Ctrl+, is the usual "open preferences" key, and the gear is clickable too.
             Keysym::comma if ctrl => self.ui.open_settings(),
             Keysym::Return | Keysym::KP_Enter => {
                 self.picked = self.ui.selected();
@@ -614,16 +601,12 @@ impl KeyboardHandler for App {
             Keysym::Page_Down => self.ui.page(true),
             Keysym::Tab => self.ui.cycle_section(false),
             Keysym::ISO_Left_Tab => self.ui.cycle_section(true),
-            // Ctrl+U clears the query, Ctrl+W drops a word.
             Keysym::u if ctrl => self.ui.edit(|q| q.clear()),
             Keysym::w if ctrl => self.ui.edit(|q| q.delete_word_back()),
-            Keysym::v if ctrl => {
-                // wl-clipboard-rs is already here for the copy path.
-                match clipboard_text() {
-                    Some(t) => self.ui.insert(&t),
-                    None => return,
-                }
-            }
+            Keysym::v if ctrl => match clipboard_text() {
+                Some(t) => self.ui.insert(&t),
+                None => return,
+            },
             _ => {
                 if ctrl {
                     return;
@@ -694,8 +677,7 @@ impl PointerHandler for App {
             let (px, py) = event.position;
             match event.kind {
                 PointerEventKind::Enter { .. } => {
-                    // The enter serial is what set_cursor needs, so the first image can
-                    // only be asked for once we are actually over the surface.
+                    // The enter serial is required for the first cursor request.
                     let icon = self.cursor_for(px, py);
                     self.cursor = CursorIcon::Default;
                     self.set_cursor(conn, icon);
@@ -724,7 +706,6 @@ impl PointerHandler for App {
                     }
                 }
                 PointerEventKind::Press { .. } => {
-                    // Clicking outside the card dismisses, the way a menu does.
                     let (cx, cy) = render::card_origin(w, h);
                     let outside = px < cx
                         || py < cy
@@ -739,15 +720,13 @@ impl PointerHandler for App {
                             open_url(render::DONATE_URL);
                             continue;
                         }
-                        // A tone swatch is a target in its own right, so check it before
-                        // falling back to "which row was clicked".
                         if let Some(d) = render::stepper_at(px - cx, py - cy) {
                             let (tone, limit) = {
                                 let st = self.store.borrow();
                                 (st.settings().skin_tone, st.settings().recent_limit)
                             };
-                            self.ui.setting = render::setting_at(px - cx, py - cy)
-                                .unwrap_or(self.ui.setting);
+                            self.ui.setting =
+                                render::setting_at(px - cx, py - cy).unwrap_or(self.ui.setting);
                             if let Some(action) = self.ui.adjust_setting(d, tone, limit) {
                                 self.apply(action);
                             }
@@ -783,8 +762,7 @@ impl PointerHandler for App {
                         dirty = true;
                         continue;
                     }
-                    if let Some(i) = render::tab_at(px - cx, py - cy, self.ui.grid.sections.len())
-                    {
+                    if let Some(i) = render::tab_at(px - cx, py - cy, self.ui.grid.sections.len()) {
                         self.ui.goto_section(i);
                         dirty = true;
                         continue;
@@ -796,12 +774,9 @@ impl PointerHandler for App {
                         return;
                     }
                 }
-                PointerEventKind::Axis { vertical, .. } => {
-                    // `absolute` is in surface units; discrete steps come through it too.
-                    if vertical.absolute != 0.0 {
-                        self.ui.scroll_by(vertical.absolute);
-                        dirty = true;
-                    }
+                PointerEventKind::Axis { vertical, .. } if vertical.absolute != 0.0 => {
+                    self.ui.scroll_by(vertical.absolute);
+                    dirty = true;
                 }
                 _ => {}
             }

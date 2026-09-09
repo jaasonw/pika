@@ -171,7 +171,11 @@ fn settings(cr: &Context, theme: &Theme, fonts: &Fonts, p: &Picker, set: &Settin
         let hovered = p.hover_setting == Some(i);
 
         if focused || hovered {
-            let alpha = if focused { ROW_FOCUS_ALPHA } else { ROW_HOVER_ALPHA };
+            let alpha = if focused {
+                ROW_FOCUS_ALPHA
+            } else {
+                ROW_HOVER_ALPHA
+            };
             rounded_rect(cr, PAD, y, w, h, CELL_RADIUS);
             set_source(cr, theme.window_fg.blend(theme.window_bg, alpha));
             cr.fill().unwrap();
@@ -269,7 +273,14 @@ fn switch(cr: &Context, theme: &Theme, y: f64, row_h: f64, on: bool) {
         x + SWITCH_PAD
     };
     rounded_rect(cr, knob_x, top + SWITCH_PAD, knob, knob, knob / 2.0);
-    set_source(cr, if on { theme.selection_fg } else { theme.window_bg });
+    set_source(
+        cr,
+        if on {
+            theme.selection_fg
+        } else {
+            theme.window_bg
+        },
+    );
     cr.fill().unwrap();
 }
 
@@ -321,11 +332,20 @@ fn tone_strip(cr: &Context, theme: &Theme, fonts: &Fonts, y: f64, row_h: f64, to
         let x = x0 + i as f64 * TONE_SWATCH;
         let box_y = y + (row_h - TONE_SWATCH) / 2.0;
         if i as u8 == tone {
-            rounded_rect(cr, x + 1.0, box_y, TONE_SWATCH - 2.0, TONE_SWATCH, CELL_RADIUS);
+            rounded_rect(
+                cr,
+                x + 1.0,
+                box_y,
+                TONE_SWATCH - 2.0,
+                TONE_SWATCH,
+                CELL_RADIUS,
+            );
             set_source(cr, theme.selection_bg);
             cr.fill().unwrap();
         }
-        let wave = emoji::find("\u{270b}").map(|e| e.toned(i as u8)).unwrap_or("\u{270b}");
+        let wave = emoji::find("\u{270b}")
+            .map(|e| e.toned(i as u8))
+            .unwrap_or("\u{270b}");
         let layout = layout_for(cr, &fonts.tab, wave);
         let (tw, th) = layout.pixel_size();
         cr.move_to(
@@ -619,12 +639,12 @@ pub fn donate_hit(x: f64, y: f64) -> bool {
     };
     let fonts = Fonts::new();
     let (x0, head_w, link_w) = credit_metrics(&cr, &fonts);
-    x >= x0 + head_w && x < x0 + head_w + link_w && y >= FOOTER_Y && y < FOOTER_Y + FOOTER_H
+    x >= x0 + head_w && x < x0 + head_w + link_w && (FOOTER_Y..FOOTER_Y + FOOTER_H).contains(&y)
 }
 
 /// Whether a card-relative point falls in the search field.
 pub fn search_hit(x: f64, y: f64) -> bool {
-    x >= PAD && x < CARD_W - PAD - GEAR_W && y >= SEARCH_Y && y < SEARCH_Y + SEARCH_H
+    (PAD..CARD_W - PAD - GEAR_W).contains(&x) && (SEARCH_Y..SEARCH_Y + SEARCH_H).contains(&y)
 }
 
 /// The byte offset in `text` that a card-relative x lands on, for click-to-position.
@@ -658,7 +678,8 @@ pub fn search_index_at(text: &str, x: f64) -> usize {
 
 /// Whether a card-relative point falls on the gear.
 pub fn gear_hit(x: f64, y: f64) -> bool {
-    x >= CARD_W - PAD - GEAR_W && x < CARD_W - PAD && y >= SEARCH_Y && y < SEARCH_Y + SEARCH_H
+    (CARD_W - PAD - GEAR_W..CARD_W - PAD).contains(&x)
+        && (SEARCH_Y..SEARCH_Y + SEARCH_H).contains(&y)
 }
 
 /// Which settings row a card-relative point falls on, if any.
@@ -723,7 +744,6 @@ mod tests {
     #[test]
     fn the_card_is_exactly_twelve_cells_wide_plus_padding() {
         assert_eq!(CARD_W, 12.0 * grid::CELL + 24.0);
-        // And the regions stack up to its height without overlapping.
         assert_eq!(FOOTER_Y + FOOTER_H + PAD, CARD_H);
     }
 

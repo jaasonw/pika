@@ -1,6 +1,4 @@
-//! All persistence lives here. It is JSON today; the API is deliberately narrow so a
-//! different backing store (sqlite, if per-app history or frequency ranking ever lands)
-//! is a change to this file alone.
+//! Persistent state and settings are stored in JSON.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -94,7 +92,10 @@ impl Store {
     pub fn record_use(&mut self, ch: &str) {
         self.recents.retain(|r| r != ch);
         self.recents.insert(0, ch.to_owned());
-        let limit = self.settings.recent_limit.clamp(RECENT_LIMIT_RANGE.0, RECENT_LIMIT_RANGE.1);
+        let limit = self
+            .settings
+            .recent_limit
+            .clamp(RECENT_LIMIT_RANGE.0, RECENT_LIMIT_RANGE.1);
         self.recents.truncate(limit);
     }
 

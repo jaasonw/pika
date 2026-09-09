@@ -31,9 +31,7 @@ pub struct Ctx<'a> {
 ///    one-time permission dialog.
 pub fn finish(cx: Ctx) {
     let mut inserted = false;
-    // The focused app speaks no text-input at all, so the portal has to carry this pick.
-    // Worth saying out loud: it is the difference between an instant insert and a slow one
-    // behind a permission dialog, and the app is going to do it on every pick.
+    // The focused app does not support text input, so use the portal fallback.
     let mut no_focus = false;
 
     if !cx.no_paste {
@@ -44,10 +42,10 @@ pub fn finish(cx: Ctx) {
         }
     }
 
-    if !inserted || cx.always_copy || cx.no_paste {
-        if let Err(e) = insert::copy_to_clipboard(cx.ch) {
-            eprintln!("pika: clipboard failed: {e}");
-        }
+    if (!inserted || cx.always_copy || cx.no_paste)
+        && let Err(e) = insert::copy_to_clipboard(cx.ch)
+    {
+        eprintln!("pika: clipboard failed: {e}");
     }
 
     if !inserted && !cx.no_paste {

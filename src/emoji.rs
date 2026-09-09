@@ -18,13 +18,17 @@ pub struct Emoji {
     pub tones: [&'static str; 5],
 }
 
-// Defines EMOJI, GROUPS, BASE_COUNT and GROUP_RANGES. Everything the old lazy statics
-// worked out at runtime — which entries are base emoji, which group they fall in, and
-// what each one looks like in every tone — is settled at compile time instead.
+// Defines the generated emoji table and its indexes.
 include!(concat!(env!("OUT_DIR"), "/emoji_table.rs"));
 
 /// The five Fitzpatrick modifiers, in the order the settings window offers them.
-pub const TONES: [char; 5] = ['\u{1f3fb}', '\u{1f3fc}', '\u{1f3fd}', '\u{1f3fe}', '\u{1f3ff}'];
+pub const TONES: [char; 5] = [
+    '\u{1f3fb}',
+    '\u{1f3fc}',
+    '\u{1f3fd}',
+    '\u{1f3fe}',
+    '\u{1f3ff}',
+];
 
 /// The base emoji, in tab-bar group order. Tone variants live past this point and are
 /// reachable only through `find`.
@@ -119,8 +123,6 @@ pub fn search(query: &str) -> Vec<&'static Emoji> {
         let mut hits: Vec<(u32, usize, &'static Emoji)> = Vec::new();
 
         for (idx, e) in base().iter().enumerate() {
-            // The mask rejects most of the table for the cost of two ANDs, before the
-            // matcher ever looks at the ~93 characters of name and keywords.
             let skip_name = cannot_match(e.name_mask, q);
             let skip_kw = cannot_match(e.kw_mask, q);
             if skip_name && skip_kw {
@@ -134,7 +136,6 @@ pub fn search(query: &str) -> Vec<&'static Emoji> {
             let name = if skip_name { None } else { score_of(e.name) };
             let kw = if skip_kw { None } else { score_of(e.keywords) };
 
-            // A name hit is worth far more than a keyword hit.
             let mut score = match (name, kw) {
                 (Some(n), _) => n * 2,
                 (None, Some(k)) => k,
@@ -145,7 +146,6 @@ pub fn search(query: &str) -> Vec<&'static Emoji> {
             if e.name_lower == lower {
                 score += 10_000;
             } else if e.name_lower.starts_with(&lower) {
-                // "cat" should reach cat, cat face and cat with wry smile before bobcat.
                 score += 7_000;
             } else if e.keywords.split(' ').any(|k| k.eq_ignore_ascii_case(query)) {
                 score += 5_000;
@@ -155,10 +155,8 @@ pub fn search(query: &str) -> Vec<&'static Emoji> {
             hits.push((score, idx, e));
         }
 
-        // Ties break on table order, which is the Unicode ordering within each group.
-        let cmp = |a: &(u32, usize, &Emoji), b: &(u32, usize, &Emoji)| {
-            b.0.cmp(&a.0).then(a.1.cmp(&b.1))
-        };
+        let cmp =
+            |a: &(u32, usize, &Emoji), b: &(u32, usize, &Emoji)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         if hits.len() > MAX_HITS {
             hits.select_nth_unstable_by(MAX_HITS, cmp);
             hits.truncate(MAX_HITS);
@@ -175,13 +173,16 @@ pub fn bench() {
 
     println!("{} entries, {BASE_COUNT} of them base emoji", EMOJI.len());
 
-    // What a rebuild() with an empty query gathers: every group, toned.
     let t = Instant::now();
     let mut cells = 0usize;
     for g in GROUPS {
         cells += by_group(g).map(|e| e.toned(1)).count();
     }
-    println!("rebuild gather ({cells} cells over {} groups): {:?}", GROUPS.len(), t.elapsed());
+    println!(
+        "rebuild gather ({cells} cells over {} groups): {:?}",
+        GROUPS.len(),
+        t.elapsed()
+    );
 
     let t = Instant::now();
     for _ in 0..48 {
@@ -202,8 +203,6 @@ mod tests {
 
     #[test]
     fn table_is_populated() {
-        // Emoji 16 has ~3.9k fully-qualified sequences; a big drop means the
-        // regenerated data file lost something.
         assert!(EMOJI.len() > 3500, "got {}", EMOJI.len());
         assert!(EMOJI.iter().all(|e| !e.ch.is_empty() && !e.name.is_empty()));
     }
@@ -239,16 +238,25 @@ mod tests {
     #[test]
     fn search_finds_by_keyword() {
         let hits = search("kitten");
-        assert!(hits.iter().take(10).any(|e| e.ch == "\u{1f431}"), "no cat face in top 10");
+        assert!(
+            hits.iter().take(10).any(|e| e.ch == "\u{1f431}"),
+            "no cat face in top 10"
+        );
     }
 
     #[test]
     fn search_ranks_prefixes_above_late_substrings() {
         let hits = search("cat");
         let rank = |ch: &str| hits.iter().position(|e| e.ch == ch);
-        // "cat face" starts with the query; "bobcat" merely contains it.
-        assert!(rank("\u{1f431}") < rank("\u{1f408}\u{200d}\u{2b1b}") || rank("\u{1f408}\u{200d}\u{2b1b}").is_none());
-        assert!(hits[0].name_lower.starts_with("cat"), "got {:?}", hits[0].name);
+        assert!(
+            rank("\u{1f431}") < rank("\u{1f408}\u{200d}\u{2b1b}")
+                || rank("\u{1f408}\u{200d}\u{2b1b}").is_none()
+        );
+        assert!(
+            hits[0].name_lower.starts_with("cat"),
+            "got {:?}",
+            hits[0].name
+        );
     }
 
     /// The mask prefilter must never reject a candidate the matcher would have scored.
@@ -262,15 +270,16 @@ mod tests {
                     let p = Pattern::parse(q, CaseMatching::Ignore, Normalization::Smart);
                     let mut m = Matcher::new(Config::DEFAULT);
                     let mut b = Vec::new();
-                    p.score(nucleo_matcher::Utf32Str::new(e.name, &mut b), &mut m).is_some() || {
-                        b.clear();
-                        p.score(nucleo_matcher::Utf32Str::new(e.keywords, &mut b), &mut m)
-                            .is_some()
-                    }
+                    p.score(nucleo_matcher::Utf32Str::new(e.name, &mut b), &mut m)
+                        .is_some()
+                        || {
+                            b.clear();
+                            p.score(nucleo_matcher::Utf32Str::new(e.keywords, &mut b), &mut m)
+                                .is_some()
+                        }
                 })
                 .map(|e| e.ch)
                 .collect();
-            // Only compare when the cap did not truncate, or the counts legitimately differ.
             if brute.len() <= MAX_HITS {
                 assert_eq!(masked.len(), brute.len(), "query {q:?} lost or gained hits");
             }
@@ -283,14 +292,15 @@ mod tests {
             let (a, b) = GROUP_RANGES[i];
             assert!(a <= b && b <= BASE_COUNT, "bad range for {g}");
         }
-        // Every base emoji belongs to exactly one range.
-        assert_eq!(GROUP_RANGES.iter().map(|(a, b)| b - a).sum::<usize>(), BASE_COUNT);
+        assert_eq!(
+            GROUP_RANGES.iter().map(|(a, b)| b - a).sum::<usize>(),
+            BASE_COUNT
+        );
     }
 
     #[test]
     fn find_reaches_both_halves_of_the_table() {
         assert_eq!(find("\u{1f600}").map(|e| e.name), Some("grinning face"));
-        // A tone variant lives past BASE_COUNT; recents store these verbatim.
         assert!(find("\u{1f44b}\u{1f3fb}").is_some());
         assert!(find("not an emoji").is_none());
     }

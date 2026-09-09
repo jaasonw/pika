@@ -1,11 +1,7 @@
 //! Desktop colours for the native backend.
 //!
-//! Read straight from `~/.config/kdeglobals`. That is a plain file read - a few hundred
-//! microseconds - where the `org.freedesktop.appearance` portal costs a D-Bus round trip on
-//! a path whose whole budget is tens of milliseconds, and the portal only reports a
-//! light/dark preference and an accent colour anyway. On the desktop this picker targets,
-//! kdeglobals is both cheaper and more faithful. See the note in the plan about what the
-//! portal would still be good for on non-KDE desktops.
+//! KDE colours are read from `~/.config/kdeglobals`; the portal reports less palette data
+//! and adds a D-Bus round trip. Non-KDE desktops use the Breeze fallback.
 
 /// A colour in Cairo's units: components in `[0.0, 1.0]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -25,8 +21,6 @@ impl Rgb {
     }
 
     /// Perceived brightness. The coefficients are the usual Rec. 601 luma weights.
-    /// Only the tests read this today; it is the natural place for a light/dark decision
-    /// if one is ever needed.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn luma(&self) -> f64 {
         0.299 * self.r + 0.587 * self.g + 0.114 * self.b
@@ -92,7 +86,6 @@ impl Theme {
                     "Colors:Window" => "win",
                     "Colors:Selection" => "sel",
                     "Colors:View" => "view",
-                    // Any other section: keep scanning, but ignore its keys.
                     _ => "",
                 };
                 continue;
@@ -119,8 +112,6 @@ impl Theme {
         Some(Theme {
             window_bg,
             window_fg,
-            // The remaining three are cosmetic; Breeze's are a reasonable stand-in if a
-            // partial colour scheme omits them.
             view_bg: view_bg.unwrap_or(BREEZE_LIGHT.view_bg),
             selection_bg: sel_bg.unwrap_or(BREEZE_LIGHT.selection_bg),
             selection_fg: sel_fg.unwrap_or(window_bg),
@@ -180,11 +171,10 @@ fixed=Monospace,10
 
     #[test]
     fn a_partial_scheme_keeps_the_colours_it_did_define() {
-        let t = Theme::parse("[Colors:Window]\nBackgroundNormal=0,0,0\nForegroundNormal=255,255,255\n")
-            .expect("window pair present");
+        let t =
+            Theme::parse("[Colors:Window]\nBackgroundNormal=0,0,0\nForegroundNormal=255,255,255\n")
+                .expect("window pair present");
         assert_eq!(t.window_bg, Rgb::from_u8(0, 0, 0));
-        // Selection foreground has no sensible Breeze default against an unknown window
-        // colour, so it falls back to the window background instead.
         assert_eq!(t.selection_fg, Rgb::from_u8(0, 0, 0));
         assert_eq!(t.selection_bg, BREEZE_LIGHT.selection_bg);
     }

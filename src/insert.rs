@@ -1,14 +1,13 @@
-//! Getting the emoji into the focused text field.
+//! Insert through the RemoteDesktop portal.
 //!
-//! KWin exposes no `zwp_virtual_keyboard_manager_v1`, so `wtype` and everything built on
-//! it (rofimoji, rofi-emoji) silently does nothing on this desktop. The path that does
-//! work is the RemoteDesktop portal: put the emoji on the clipboard, then have the
-//! portal synthesize Ctrl+V into whatever regained focus after we closed.
+//! KWin does not expose `zwp_virtual_keyboard_manager_v1`, so `wtype`-based tools do not
+//! work here. The fallback copies the emoji and asks the portal to synthesize Ctrl+V after
+//! the picker releases focus.
 
+use ashpd::desktop::PersistMode;
 use ashpd::desktop::remote_desktop::{
     DeviceType, KeyState, NotifyKeyboardKeycodeOptions, RemoteDesktop, SelectDevicesOptions,
 };
-use ashpd::desktop::PersistMode;
 use std::time::Duration;
 
 /// Linux evdev key codes, as the portal expects.
@@ -31,11 +30,8 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), String> {
     // Fork a server for the selection: a Wayland clipboard needs a live owner, and this
     // process is about to exit.
     opts.foreground(false);
-    opts.copy(
-        Source::Bytes(text.as_bytes().into()),
-        MimeType::Text,
-    )
-    .map_err(|e| e.to_string())
+    opts.copy(Source::Bytes(text.as_bytes().into()), MimeType::Text)
+        .map_err(|e| e.to_string())
 }
 
 pub enum Reply {
@@ -49,7 +45,10 @@ pub enum Reply {
 /// D-Bus round trips (and, first run only, the permission dialog) plus the paste itself,
 /// so call only after the window is hidden and there is nothing left to overlap it with.
 pub fn paste_once(restore_token: Option<String>, timeout: Duration) -> Reply {
-    let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => return Reply::Failed(e.to_string()),
     };
@@ -86,8 +85,7 @@ async fn open_session(restore_token: Option<&str>) -> Result<OpenSession, String
             &session,
             SelectDevicesOptions::default()
                 .set_devices(ashpd::enumflags2::BitFlags::from(DeviceType::Keyboard))
-                // ExplicitlyRevoked plus the saved token means the KDE dialog appears
-                // once, ever, and not on later runs.
+                // Reuse the saved token after the first approval.
                 .set_persist_mode(PersistMode::ExplicitlyRevoked)
                 .set_restore_token(restore_token),
         )
@@ -119,7 +117,12 @@ async fn paste(
         (KEY_LEFTCTRL, KeyState::Released),
     ] {
         proxy
-            .notify_keyboard_keycode(session, code, state, NotifyKeyboardKeycodeOptions::default())
+            .notify_keyboard_keycode(
+                session,
+                code,
+                state,
+                NotifyKeyboardKeycodeOptions::default(),
+            )
             .await
             .map_err(|e| e.to_string())?;
         tokio::time::sleep(KEY_GAP).await;

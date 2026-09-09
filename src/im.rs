@@ -1,14 +1,8 @@
-//! Direct text insertion as a Wayland input method.
+//! Commit text through KWin's Wayland input-method interface.
 //!
-//! KWin exposes `zwp_input_method_v1`. An input method does not synthesize keystrokes:
-//! it commits text straight into whatever holds the text-input focus. That avoids the
-//! portal entirely - no permission prompt, no "remote control" notification, no
-//! clipboard round trip, and none of the timing the portal path needs.
-//!
-//! It does not always apply. Only one client may bind the interface (a virtual keyboard
-//! or fcitx5 would already hold it), and it only reaches apps that speak
-//! `zwp_text_input_v2/v3` - so XWayland clients generally miss out. Every failure here
-//! is expected to fall back to the portal.
+//! This avoids the clipboard and portal when the focused application supports
+//! `zwp_text_input_v2/v3`. The interface is single-client and does not reach most
+//! XWayland clients; callers fall back to the portal when it is unavailable.
 
 use std::os::fd::AsRawFd;
 use std::time::{Duration, Instant};
@@ -16,17 +10,15 @@ use wayland_client::{Connection, Dispatch, QueueHandle, protocol::wl_registry};
 
 /// Why the input-method route did not carry the emoji.
 ///
-/// The two cases want different handling, which is the whole reason this is not a
-/// `String`: [`Error::NoFocus`] means the app on the other end does not speak
-/// `zwp_text_input` at all, so no amount of retrying or escalating reaches it, while
-/// [`Error::Unusable`] is about this route specifically and leaves the portal worth a try.
+/// [`Error::NoFocus`] means the target does not speak `zwp_text_input`, so retrying this
+/// route cannot help. [`Error::Unusable`] describes a failure of the route itself and allows
+/// the caller to try the portal.
 #[derive(Debug)]
 pub enum Error {
     /// Nothing took input-method focus before the deadline: an X11 client, or Chromium
     /// without `--enable-wayland-ime`.
     NoFocus,
-    /// The route itself is unavailable - no interface, another client already holds it,
-    /// or the connection broke.
+    /// The route is unavailable: the interface is missing, busy, or disconnected.
     Unusable(String),
 }
 
@@ -71,11 +63,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         _: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        if let wl_registry::Event::Global { name, interface, version } = event {
-            if interface == "zwp_input_method_v1" {
-                state.method =
-                    Some(registry.bind::<ZwpInputMethodV1, _, _>(name, version.min(1), qh, ()));
-            }
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+            && interface == "zwp_input_method_v1"
+        {
+            state.method =
+                Some(registry.bind::<ZwpInputMethodV1, _, _>(name, version.min(1), qh, ()));
         }
     }
 }
@@ -90,7 +86,6 @@ impl Dispatch<ZwpInputMethodV1, ()> for State {
         _: &QueueHandle<Self>,
     ) {
         match event {
-            // The compositor hands us a context whenever a text field takes focus.
             zwp_input_method_v1::Event::Activate { id } => state.context = Some(id),
             zwp_input_method_v1::Event::Deactivate { context } => {
                 context.destroy();
@@ -152,7 +147,9 @@ pub fn commit(text: &str, wait: Duration) -> Result<(), Error> {
     // focus, and commit the emoji into that one instead.
     let deadline = Instant::now() + wait;
     loop {
-        queue.dispatch_pending(&mut state).map_err(|e| unusable(&e))?;
+        queue
+            .dispatch_pending(&mut state)
+            .map_err(|e| unusable(&e))?;
         if state.context.is_some() {
             break;
         }

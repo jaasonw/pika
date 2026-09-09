@@ -1,12 +1,7 @@
-//! A single-line editable string with a cursor.
+//! Single-line search text with a byte-offset cursor.
 //!
-//! There is no Wayland text-entry widget to borrow, and no toolkit here to provide one, so
-//! the search box needs its own buffer. This is deliberately the small half of what
-//! `GtkSearchEntry` did: a cursor, word-wise motion and deletion, and the usual line-editing
-//! chords. There is no selection, because nothing in the picker needs one, and no
-//! character-wise motion, because plain Left and Right belong to the grid.
-//!
-//! `cursor` is a byte offset and is always on a `char` boundary.
+//! The picker handles word-wise editing and leaves plain Left and Right for grid navigation.
+//! The cursor is always on a `char` boundary.
 
 #[derive(Default, Debug)]
 pub struct Query {
@@ -61,8 +56,7 @@ impl Query {
         true
     }
 
-    /// Delete from the start of the previous word to the cursor, for Ctrl+W and
-    /// Ctrl+Backspace.
+    /// Delete the previous word for Ctrl+W and Ctrl+Backspace.
     pub fn delete_word_back(&mut self) -> bool {
         let start = self.word_start();
         if start == self.cursor {
@@ -73,7 +67,7 @@ impl Query {
         true
     }
 
-    /// Delete from the cursor to the end of the next word, for Ctrl+Delete.
+    /// Delete the next word for Ctrl+Delete.
     pub fn delete_word_forward(&mut self) -> bool {
         let end = self.word_end();
         if end == self.cursor {
@@ -122,7 +116,10 @@ impl Query {
     /// Used for click-to-position, where the offset comes out of a Pango layout.
     pub fn set_cursor(&mut self, at: usize) {
         let at = at.min(self.text.len());
-        self.cursor = (0..=at).rev().find(|i| self.text.is_char_boundary(*i)).unwrap_or(0);
+        self.cursor = (0..=at)
+            .rev()
+            .find(|i| self.text.is_char_boundary(*i))
+            .unwrap_or(0);
     }
 
     /// Start of the word before the cursor: skip any run of spaces, then the word itself.
@@ -181,7 +178,6 @@ mod tests {
         assert_eq!((q.text(), q.cursor()), ("ct", 1));
         assert!(q.delete());
         assert_eq!((q.text(), q.cursor()), ("c", 1));
-        // Nothing left to delete forward, and the cursor does not move.
         assert!(!q.delete());
         assert_eq!(q.cursor(), 1);
     }
@@ -201,7 +197,6 @@ mod tests {
     #[test]
     fn multibyte_characters_are_not_split() {
         let mut q = q("a\u{1f600}b");
-        // Cursor just after the emoji; backspace must take all of it.
         q.set_cursor(1 + "\u{1f600}".len());
         assert!(q.backspace());
         assert_eq!(q.text(), "ab");
@@ -256,10 +251,8 @@ mod tests {
     #[test]
     fn set_cursor_snaps_onto_a_character_boundary() {
         let mut q = q("a\u{1f600}b");
-        // Byte 2 is inside the emoji; the cursor lands before it rather than in it.
         q.set_cursor(2);
         assert_eq!(q.cursor(), 1);
-        // Past the end clamps.
         q.set_cursor(999);
         assert_eq!(q.cursor(), q.text().len());
     }

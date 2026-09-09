@@ -1,6 +1,6 @@
 # pika
 
-A 100% Wayland native grid emoji picker for KDE, in the style of the Windows and macOS pickers.
+A native Wayland grid emoji picker for KDE, in the style of the Windows and macOS pickers.
 Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
 
 
@@ -16,13 +16,14 @@ Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
 
 - **Everything in one list.** Recents pinned at the top, then every category behind its
   own header
-- **Fuzzy Search** by name and keyword
-- **Skin tone** applied across the grid, configured in settings.
+- **Fuzzy search** by name and keyword
+- **Skin tone** applied across the grid and configured in settings
 - **Inserts directly** into the focused text field with clipboard fallback
-- **Daemonless**, no background process to listen to keypresses, blazingly fast cold start 🚀
-- **Small.** Zero dependency on GTK or QT, 100% native Wayland client drawing with cairo. ~37 MB
-  RAM usage when active, 5MB portable binary with no external dependencies (Except of course, Wayland and KDE)
-- **No helper binaries or elevated access** Other KDE emoji pickers depend on helper binaries like ydotool, wl-copy, wtype, rofi, etc. A process that can read every keystroke you type and costs extra memory as a background process
+- **Daemonless**, with no background process listening for keypresses
+- **Small.** No GTK or Qt dependency; the native Wayland client draws with Cairo. It uses ~37 MB
+  of RAM while active and produces a 5 MB binary. Wayland and KDE are the runtime dependencies.
+- **No helper binaries or elevated access.** Other KDE emoji pickers depend on tools such as ydotool,
+  wl-copy, wtype, or rofi. These add dependencies and, in some cases, a process with input access.
 
 ## How it compares
 
@@ -38,12 +39,11 @@ Press a hotkey, pick an emoji, and it appears in whatever you were typing in.
 | [Smile](https://github.com/mijorus/smile)                         | clipboard, GNOME-oriented                    | none                             | clipboard                      | fuzzy, many locales | per emoji        | your own tags           | yes                 |
 | Emote                                                             | clipboard, X11 auto-paste only               | none                             | clipboard                      | substring           | no               | no                      | no                  |
 
-The `wtype` pickers will not work on KDE because KWin does not implement the protocol they type through
+The `wtype` pickers do not work on KDE because KWin does not implement the protocol they use.
 
 ### Other Wayland desktops
 
-Only KDE is officially supported. In an effort stay lightweight and portable, it will likely
-stay this way, but feel free to send a pull request if you would like to implement it.
+Only KDE is officially supported. Pull requests for other desktops are welcome.
 
 ## Install
 
@@ -151,6 +151,6 @@ Unicode, and the Wayland and KDE specifics that shaped the implementation.
 
 ## Licence
 
-Open source under MIT License
+Open source under the MIT License
 
 Emoji names and keywords are Unicode data, under their own terms; see `data/LICENSE`.

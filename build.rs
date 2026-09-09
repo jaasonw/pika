@@ -2,7 +2,13 @@ use std::collections::HashMap;
 use std::io::Write;
 
 /// The five Fitzpatrick modifiers, in the order `emoji::TONES` lists them.
-const TONES: [char; 5] = ['\u{1f3fb}', '\u{1f3fc}', '\u{1f3fd}', '\u{1f3fe}', '\u{1f3ff}'];
+const TONES: [char; 5] = [
+    '\u{1f3fb}',
+    '\u{1f3fc}',
+    '\u{1f3fd}',
+    '\u{1f3fe}',
+    '\u{1f3ff}',
+];
 
 /// Category order shown in the tab bar, and the order base emoji are emitted in. Emitted
 /// into the generated table so it cannot drift from `GROUP_RANGES`.
@@ -117,16 +123,33 @@ fn main() {
     let out = std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("emoji_table.rs");
     let mut f = std::io::BufWriter::new(std::fs::File::create(out).unwrap());
 
-    writeln!(f, "/// Category order shown in the tab bar. \"Recents\" is synthesized by the UI.").unwrap();
+    writeln!(
+        f,
+        "/// Category order shown in the tab bar. \"Recents\" is synthesized by the UI."
+    )
+    .unwrap();
     writeln!(f, "pub static GROUPS: [&str; {}] = [", GROUPS.len()).unwrap();
     for g in GROUPS {
         writeln!(f, "    {g:?},").unwrap();
     }
     writeln!(f, "];").unwrap();
-    writeln!(f, "/// Base emoji occupy `..BASE_COUNT`, tone variants the rest.").unwrap();
+    writeln!(
+        f,
+        "/// Base emoji occupy `..BASE_COUNT`, tone variants the rest."
+    )
+    .unwrap();
     writeln!(f, "pub const BASE_COUNT: usize = {base_count};").unwrap();
-    writeln!(f, "/// Half-open bounds of each entry of `GROUPS` within the base range.").unwrap();
-    writeln!(f, "pub static GROUP_RANGES: [(usize, usize); {}] = [", ranges.len()).unwrap();
+    writeln!(
+        f,
+        "/// Half-open bounds of each entry of `GROUPS` within the base range."
+    )
+    .unwrap();
+    writeln!(
+        f,
+        "pub static GROUP_RANGES: [(usize, usize); {}] = [",
+        ranges.len()
+    )
+    .unwrap();
     for (a, b) in &ranges {
         writeln!(f, "    ({a}, {b}),").unwrap();
     }
@@ -174,5 +197,8 @@ fn main() {
         writeln!(f, "    {i},").unwrap();
     }
     writeln!(f, "];").unwrap();
-    assert!(ordered.len() <= u16::MAX as usize, "BY_CH needs a wider index");
+    assert!(
+        ordered.len() <= u16::MAX as usize,
+        "BY_CH needs a wider index"
+    );
 }
